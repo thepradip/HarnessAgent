@@ -1,0 +1,32 @@
+{
+  "benchmark": "ablation_nexussql",
+  "n_tasks": 50,
+  "conditions": [
+    {
+      "condition": "A",
+      "exec_acc": 0.3673,
+      "gen_error_rate": 0.0,
+      "n": 49
+    },
+    {
+      "condition": "B",
+      "exec_acc": 0.4286,
+      "gen_error_rate": 0.0,
+      "n": 49
+    },
+    {
+      "condition": "C",
+      "exec_acc": 0.449,
+      "gen_error_rate": 0.0204,
+      "n": 49
+    }
+  ],
+  "gains": {
+    "verifier_only": 0.0613,
+    "self_correction": 0.0204,
+    "total_a_to_c": 0.0817
+  },
+  "agent": "NexusSql",
+  "model": "gpt-5.5 (Azure)",
+  "dataset": "gretelai/synthetic_text_to_sql"
+}
