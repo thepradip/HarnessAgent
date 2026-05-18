@@ -239,6 +239,7 @@ def create_app() -> FastAPI:
     # Routers
     # ------------------------------------------------------------------
     from harness.api.routes.evals import router as evals_router
+    from harness.api.routes.feedback import router as feedback_router
     from harness.api.routes.health import router as health_router
     from harness.api.routes.improvement import router as improvement_router
     from harness.api.routes.memory import router as memory_router
@@ -250,6 +251,7 @@ def create_app() -> FastAPI:
     app.include_router(runs_router, prefix="/runs", tags=["Runs"])
     app.include_router(steps_router, prefix="/runs", tags=["Steps"])
     app.include_router(traces_router, prefix="/runs", tags=["Traces"])
+    app.include_router(feedback_router, prefix="/runs", tags=["Feedback"])
     app.include_router(memory_router, prefix="/memory", tags=["Memory"])
     app.include_router(evals_router, prefix="/evals", tags=["Evals"])
     app.include_router(improvement_router, tags=["Improvement"])
