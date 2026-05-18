@@ -98,14 +98,21 @@ def build_pipeline(
     if config.allowed_tools is not None or config.blocked_tools:
         try:
             from guardrail.intermediate.tool_policy import ToolPolicy
-            intermediate_stages.append(
-                ToolPolicy(
-                    allowed=config.allowed_tools,
-                    blocked=config.blocked_tools,
+            try:
+                # Try keyword args (newer guardrail versions)
+                intermediate_stages.append(
+                    ToolPolicy(
+                        allowed=config.allowed_tools,
+                        blocked=config.blocked_tools,
+                    )
                 )
-            )
-        except ImportError:
-            logger.debug("ToolPolicy not available — skipping")
+            except TypeError:
+                # Older guardrail API — positional args
+                intermediate_stages.append(
+                    ToolPolicy(config.allowed_tools, config.blocked_tools)
+                )
+        except (ImportError, Exception) as exc:
+            logger.debug("ToolPolicy not available — skipping (%s)", exc)
 
     # ------------------------------------------------------------------
     # Output guards
