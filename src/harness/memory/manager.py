@@ -16,6 +16,12 @@ from harness.memory.context_engine import (
     ContextEngine,
     SubAgentSlice,
 )
+from harness.memory.context_engineering import (
+    AssembledContext,
+    ContextPipeline,
+    SchemaStore,
+    TableSchema,
+)
 from harness.memory.context_manager import ContextWindowManager
 from harness.memory.graph import get_graph_memory
 from harness.memory.graph_rag import GraphRAGEngine
@@ -70,6 +76,7 @@ class MemoryManager:
         context_manager: ContextWindowManager,
         context_engine: ContextEngine | None = None,
         session_registry: SessionMemoryRegistry | None = None,
+        context_pipeline: ContextPipeline | None = None,
     ) -> None:
         self._short_term = short_term
         self._vector_store = vector_store
@@ -79,6 +86,55 @@ class MemoryManager:
         self._context_engine = context_engine
         self._graph_rag = GraphRAGEngine(graph, vector_store, embedder)
         self._sessions = session_registry
+        self._pipeline = context_pipeline
+
+    # ------------------------------------------------------------------
+    # Context pipeline (L1 / L2 / L3)
+    # ------------------------------------------------------------------
+
+    @property
+    def pipeline(self) -> ContextPipeline | None:
+        """The L1/L2/L3 ContextPipeline, if configured."""
+        return self._pipeline
+
+    @property
+    def schema(self) -> SchemaStore | None:
+        """Direct access to the SQL SchemaStore (L3 tier)."""
+        if self._pipeline is not None:
+            return self._pipeline.l3.schema
+        return None
+
+    async def assemble_context(
+        self,
+        run_id: str,
+        query: str,
+        token_budget: int = 60_000,
+        skill_ns: str = "default",
+        db_id: str | None = None,
+        relevant_tables: list[str] | None = None,
+        include_schema: bool = True,
+        include_kg: bool = True,
+        vector_filter: dict | None = None,
+    ) -> AssembledContext | None:
+        """
+        Assemble a full L1/L2/L3 context window.
+
+        Returns None if no ContextPipeline is configured — callers
+        should fall back to build_context() in that case.
+        """
+        if self._pipeline is None:
+            return None
+        return await self._pipeline.assemble(
+            run_id=run_id,
+            query=query,
+            token_budget=token_budget,
+            skill_ns=skill_ns,
+            db_id=db_id,
+            relevant_tables=relevant_tables,
+            include_schema=include_schema,
+            include_kg=include_kg,
+            vector_filter=vector_filter,
+        )
 
     # ------------------------------------------------------------------
     # Conversation (short-term + context engine)
@@ -392,6 +448,21 @@ class MemoryManager:
             default_ttl=getattr(config, "session_memory_ttl", 604_800),
         )
 
+        # L1 / L2 / L3 context engineering pipeline
+        context_pipeline = ContextPipeline.create(
+            redis_url=config.redis_url,
+            vector_store=vector_store,
+            embedder=embedder,
+            graph=graph,
+            context_engine=context_engine,
+            relevance_threshold=getattr(config, "vector_relevance_threshold", 0.70),
+            top_k=getattr(config, "vector_top_k", 5),
+            l1_fraction=getattr(config, "context_l1_fraction", 0.60),
+            l2_fraction=getattr(config, "context_l2_fraction", 0.25),
+            l3_fraction=getattr(config, "context_l3_fraction", 0.15),
+            schema_ttl=getattr(config, "schema_ttl", 86_400 * 7),
+        )
+
         return cls(
             short_term=short_term,
             vector_store=vector_store,
@@ -400,4 +471,5 @@ class MemoryManager:
             context_manager=context_manager,
             context_engine=context_engine,
             session_registry=session_registry,
+            context_pipeline=context_pipeline,
         )
