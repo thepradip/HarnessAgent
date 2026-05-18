@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from harness.llm.anthropic import AnthropicProvider
 from harness.llm.hermes import HermesXMLProvider
 from harness.llm.local import ModelCapabilities, OpenAICompatProvider
-from harness.llm.openai_provider import OpenAIProvider
+from harness.llm.openai_provider import AzureOpenAIProvider, OpenAIProvider
 from harness.llm.router import LLMRouter, LLMRouterConfig
 
 if TYPE_CHECKING:
@@ -33,6 +33,8 @@ _OPENAI_CONTEXT: dict[str, int] = {
     "gpt-4.5": 128_000,
     "gpt-5": 128_000,
     "gpt-5-mini": 128_000,
+    "gpt-5.2": 128_000,
+    "gpt-5.5": 128_000,
     "o1": 128_000,
     "o1-mini": 128_000,
     "o1-preview": 128_000,
@@ -57,6 +59,27 @@ def build_router(config: "Settings") -> LLMRouter:
         circuit_success_threshold=2,
     )
     router = LLMRouter(config=router_config)
+
+    # ------------------------------------------------------------------
+    # Azure OpenAI (priority 0 — takes precedence when configured)
+    # ------------------------------------------------------------------
+    _az_key = getattr(config, "azure_openai_api_key", "") or ""
+    _az_ep  = getattr(config, "azure_openai_endpoint", "") or ""
+    if isinstance(_az_key, str) and isinstance(_az_ep, str) and _az_key and _az_ep:
+        deployment = config.azure_openai_deployment or "gpt-5.2"
+        router.register(
+            AzureOpenAIProvider(
+                api_key=_az_key,
+                azure_endpoint=_az_ep,
+                deployment=deployment,
+                api_version=getattr(config, "azure_openai_api_version", "2025-04-01-preview") or "2025-04-01-preview",
+            ),
+            priority=0,
+            context_window=_OPENAI_CONTEXT.get(deployment, 128_000),
+        )
+        logger.info("Registered Azure OpenAI provider: deployment=%s", deployment)
+    else:
+        logger.debug("AZURE_OPENAI_API_KEY / AZURE_OPENAI_ENDPOINT not set — Azure disabled")
 
     # ------------------------------------------------------------------
     # Anthropic Claude
@@ -190,7 +213,11 @@ def build_router(config: "Settings") -> LLMRouter:
 
     if not router._config.providers:
         raise RuntimeError(
-            "No LLM providers configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env"
+            "No LLM providers configured. Set one of:\n"
+            "  AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT  (for Azure GPT-5.2)\n"
+            "  ANTHROPIC_API_KEY                             (for Claude)\n"
+            "  OPENAI_API_KEY                                (for OpenAI)\n"
+            "in your .env file."
         )
 
     return router

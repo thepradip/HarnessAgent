@@ -31,7 +31,7 @@ _REASONING_MODELS = frozenset({
     "o1", "o1-mini", "o1-preview",
     "o3", "o3-mini",
     "o4-mini",
-    "gpt-5", "gpt-5-mini",
+    "gpt-5", "gpt-5-mini", "gpt-5.2", "gpt-5.5",
 })
 
 # Prefix patterns for reasoning/completion-token models not listed above
@@ -41,7 +41,7 @@ _REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5")
 _CACHED_MODELS = frozenset({
     "gpt-4o", "gpt-4o-mini", "gpt-4.5",
     "gpt-4o-2024-11-20", "gpt-4o-mini-2024-07-18",
-    "gpt-5", "gpt-5-mini",
+    "gpt-5", "gpt-5-mini", "gpt-5.2", "gpt-5.5",
     "o1", "o3", "o4-mini",
 })
 
@@ -239,3 +239,71 @@ class OpenAIProvider:
                 args = {"_raw": tc.function.arguments}
             result.append(ToolCall(id=tc.id, name=tc.function.name, args=args))
         return result
+
+
+class AzureOpenAIProvider(OpenAIProvider):
+    """
+    Azure OpenAI provider — uses AzureOpenAI client instead of OpenAI.
+
+    Configured via:
+        AZURE_OPENAI_API_KEY      — Azure API key
+        AZURE_OPENAI_ENDPOINT     — https://your-resource.openai.azure.com/
+        AZURE_OPENAI_API_VERSION  — e.g. 2025-01-01-preview
+        AZURE_OPENAI_DEPLOYMENT   — deployment name in Azure portal (e.g. gpt-5.2)
+
+    The deployment name IS the model name passed to the API.
+    """
+
+    provider_name: str = "azure_openai"
+
+    def __init__(
+        self,
+        api_key: str,
+        azure_endpoint: str,
+        deployment: str = "gpt-5.5",
+        api_version: str = "2025-04-01-preview",
+        timeout: float = 120.0,
+    ) -> None:
+        from openai import AsyncAzureOpenAI
+        from urllib.parse import urlparse, urlunparse
+
+        self.model = deployment   # Azure uses deployment name as model identifier
+
+        # Normalize endpoint: strip any /openai/* suffix the user included.
+        # AzureOpenAI client builds its own path on top of the base URL.
+        parsed = urlparse(azure_endpoint)
+        base = parsed.path.split("/openai")[0].rstrip("/")
+        clean_endpoint = urlunparse(parsed._replace(path=base + "/"))
+
+        self._client = AsyncAzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=clean_endpoint,
+            azure_deployment=deployment,
+            api_version=api_version,
+            timeout=timeout,
+            max_retries=0,
+        )
+        self._is_reasoning = (
+            deployment in _REASONING_MODELS
+            or any(deployment.startswith(p) for p in _REASONING_PREFIXES)
+        )
+        logger.info(
+            "AzureOpenAIProvider: deployment=%s endpoint=%s api_version=%s",
+            deployment, azure_endpoint.split(".openai.azure.com")[0].split("//")[-1],
+            api_version,
+        )
+
+    async def health_check(self) -> bool:
+        """Azure health check — minimal completion with the correct token parameter."""
+        try:
+            await self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "developer", "content": "You are a health check assistant."},
+                    {"role": "user", "content": "Reply with the word OK."},
+                ],
+                max_completion_tokens=5,
+            )
+            return True
+        except Exception:
+            return False

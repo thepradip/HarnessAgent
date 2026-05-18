@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     openai_models: str = "gpt-4o-mini"
     # Optional Azure OpenAI base URL (leave empty for api.openai.com)
     openai_base_url: str = ""
+    # Azure OpenAI (takes priority over openai_api_key when set)
+    azure_openai_api_key: str = ""
+    azure_openai_endpoint: str = ""            # e.g. https://your-resource.openai.azure.com/
+    azure_openai_api_version: str = "2025-01-01-preview"
+    azure_openai_deployment: str = "gpt-5.2"  # deployment name in Azure portal
     # Local model endpoints (optional)
     vllm_base_url: str = ""
     vllm_model: str = "mistralai/Mistral-7B-Instruct-v0.3"
