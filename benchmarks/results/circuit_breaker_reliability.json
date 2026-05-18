@@ -1,0 +1,84 @@
+{
+  "benchmark": "circuit_breaker_reliability",
+  "config": {
+    "failure_threshold": 5,
+    "recovery_timeout_ms": 50.0,
+    "success_threshold": 2
+  },
+  "scenarios": [
+    {
+      "name": "A_gradual_degradation",
+      "description": "20 healthy \u2192 ramp failures \u2192 recover",
+      "final_state": "CLOSED",
+      "calls_allowed": 27,
+      "calls_rejected": 2,
+      "time_to_open_ms": 0.01,
+      "time_in_open_ms": 61.06,
+      "calls_to_close": 2,
+      "false_positive_trip": false,
+      "transitions": [
+        {
+          "from": "CLOSED",
+          "to": "OPEN",
+          "at_ms": 424371522.657916,
+          "call": 25
+        },
+        {
+          "from": "OPEN",
+          "to": "HALF_OPEN",
+          "at_ms": 424371583.730958,
+          "call": 28
+        },
+        {
+          "from": "HALF_OPEN",
+          "to": "CLOSED",
+          "at_ms": 424371583.737791,
+          "call": 29
+        }
+      ]
+    },
+    {
+      "name": "B_burst_failure",
+      "description": "5 consecutive failures \u2192 immediate trip \u2192 recover",
+      "final_state": "CLOSED",
+      "calls_allowed": 7,
+      "calls_rejected": 3,
+      "time_to_open_ms": 0.01,
+      "time_in_open_ms": 50.0,
+      "calls_to_close": 2,
+      "false_positive_trip": false,
+      "transitions": [
+        {
+          "from": "CLOSED",
+          "to": "OPEN",
+          "at_ms": 424371583.786666,
+          "call": 5
+        },
+        {
+          "from": "OPEN",
+          "to": "HALF_OPEN",
+          "at_ms": 424371644.869958,
+          "call": 9
+        },
+        {
+          "from": "HALF_OPEN",
+          "to": "CLOSED",
+          "at_ms": 424371644.87833303,
+          "call": 10
+        }
+      ]
+    },
+    {
+      "name": "C_intermittent_failure",
+      "description": "4 failures + 1 success \u00d7 10 cycles \u2014 circuit must stay CLOSED",
+      "final_state": "CLOSED",
+      "calls_allowed": 50,
+      "calls_rejected": 0,
+      "time_to_open_ms": null,
+      "time_in_open_ms": null,
+      "calls_to_close": 0,
+      "false_positive_trip": false,
+      "transitions": []
+    }
+  ]
+}

@@ -1,0 +1,184 @@
+{
+  "run_id": "selftest",
+  "n_cases": 7,
+  "n_evaluated": 7,
+  "overall_pass_rate": 0.7143,
+  "execution_accuracy": 0.7143,
+  "avg_reward": 0.8823,
+  "avg_exec_time_ms": 9568.7,
+  "elapsed_seconds": 0.0,
+  "by_hardness": {
+    "easy": {
+      "count": 3,
+      "passed": 2,
+      "exec_acc": 2,
+      "pass_rate": 0.6667,
+      "exec_acc_rate": 0.6667
+    },
+    "medium": {
+      "count": 2,
+      "passed": 2,
+      "exec_acc": 2,
+      "pass_rate": 1.0,
+      "exec_acc_rate": 1.0
+    },
+    "hard": {
+      "count": 1,
+      "passed": 1,
+      "exec_acc": 1,
+      "pass_rate": 1.0,
+      "exec_acc_rate": 1.0
+    },
+    "extra-hard": {
+      "count": 1,
+      "passed": 0,
+      "exec_acc": 0,
+      "pass_rate": 0.0,
+      "exec_acc_rate": 0.0
+    }
+  },
+  "step_pass_rates": {
+    "schema_check": 1.0,
+    "syntax_check": 1.0,
+    "execution_check": 1.0,
+    "result_check": 0.7143
+  },
+  "failure_distribution": {
+    "Result does not match gold (score=0.00)": 2
+  },
+  "cases": [
+    {
+      "case_id": "selftest_00",
+      "question": "How many active employees are there?",
+      "db_id": "employees",
+      "hardness": "easy",
+      "gold_sql": "SELECT COUNT(*) FROM employees WHERE active = 1",
+      "generated_sql": "SELECT COUNT(*) FROM employees WHERE active = 1;",
+      "overall_reward": 1.0,
+      "verdict": "correct",
+      "step_scores": {
+        "schema_check": 1.0,
+        "syntax_check": 1.0,
+        "execution_check": 1.0,
+        "result_check": 1.0
+      },
+      "feedback": "All checks passed.",
+      "execution_time_ms": 9548.419541970361,
+      "cached": true
+    },
+    {
+      "case_id": "selftest_01",
+      "question": "What is the average salary across all employees?",
+      "db_id": "employees",
+      "hardness": "easy",
+      "gold_sql": "SELECT AVG(salary) FROM employees",
+      "generated_sql": "SELECT AVG(salary) AS average_salary FROM employees;",
+      "overall_reward": 1.0,
+      "verdict": "correct",
+      "step_scores": {
+        "schema_check": 1.0,
+        "syntax_check": 1.0,
+        "execution_check": 1.0,
+        "result_check": 1.0
+      },
+      "feedback": "All checks passed.",
+      "execution_time_ms": 5117.784624977503,
+      "cached": true
+    },
+    {
+      "case_id": "selftest_02",
+      "question": "List all employees in the Engineering department.",
+      "db_id": "employees",
+      "hardness": "easy",
+      "gold_sql": "SELECT name FROM employees WHERE department = 'Engineering'",
+      "generated_sql": "SELECT *\nFROM employees\nWHERE department = 'Engineering';",
+      "overall_reward": 0.5882,
+      "verdict": "partial",
+      "step_scores": {
+        "schema_check": 1.0,
+        "syntax_check": 1.0,
+        "execution_check": 1.0,
+        "result_check": 0.0
+      },
+      "feedback": "Result does not match gold (score=0.00): partial overlap 0/2",
+      "execution_time_ms": 5633.835915999953,
+      "cached": true
+    },
+    {
+      "case_id": "selftest_03",
+      "question": "Which department has the highest budget?",
+      "db_id": "employees",
+      "hardness": "medium",
+      "gold_sql": "SELECT name FROM departments ORDER BY budget DESC LIMIT 1",
+      "generated_sql": "SELECT name\nFROM departments\nORDER BY budget DESC\nLIMIT 1;",
+      "overall_reward": 1.0,
+      "verdict": "correct",
+      "step_scores": {
+        "schema_check": 1.0,
+        "syntax_check": 1.0,
+        "execution_check": 1.0,
+        "result_check": 1.0
+      },
+      "feedback": "All checks passed.",
+      "execution_time_ms": 8195.336750010028,
+      "cached": true
+    },
+    {
+      "case_id": "selftest_04",
+      "question": "How many employees are in each department?",
+      "db_id": "employees",
+      "hardness": "medium",
+      "gold_sql": "SELECT department, COUNT(*) FROM employees GROUP BY department",
+      "generated_sql": "SELECT department, COUNT(*) AS employee_count\nFROM employees\nGROUP BY department;",
+      "overall_reward": 1.0,
+      "verdict": "correct",
+      "step_scores": {
+        "schema_check": 1.0,
+        "syntax_check": 1.0,
+        "execution_check": 1.0,
+        "result_check": 1.0
+      },
+      "feedback": "All checks passed.",
+      "execution_time_ms": 19555.72766700061,
+      "cached": true
+    },
+    {
+      "case_id": "selftest_05",
+      "question": "What is the total salary cost for active employees by department?",
+      "db_id": "employees",
+      "hardness": "hard",
+      "gold_sql": "SELECT department, SUM(salary) FROM employees WHERE active=1 GROUP BY department",
+      "generated_sql": "SELECT department, SUM(salary) AS total_salary_cost\nFROM employees\nWHERE active = 1\nGROUP BY department;",
+      "overall_reward": 1.0,
+      "verdict": "correct",
+      "step_scores": {
+        "schema_check": 1.0,
+        "syntax_check": 1.0,
+        "execution_check": 1.0,
+        "result_check": 1.0
+      },
+      "feedback": "All checks passed.",
+      "execution_time_ms": 12081.742000009399,
+      "cached": true
+    },
+    {
+      "case_id": "selftest_06",
+      "question": "Find employees whose salary is above the average salary of their department.",
+      "db_id": "employees",
+      "hardness": "extra-hard",
+      "gold_sql": "SELECT e.name FROM employees e WHERE e.salary > (SELECT AVG(e2.salary) FROM employees e2 WHERE e2.department = e.department)",
+      "generated_sql": "SELECT e.*\nFROM employees e\nWHERE e.salary > (\n  SELECT AVG(e2.salary)\n  FROM employees e2\n  WHERE e2.department = e.department\n);",
+      "overall_reward": 0.5882,
+      "verdict": "partial",
+      "step_scores": {
+        "schema_check": 1.0,
+        "syntax_check": 1.0,
+        "execution_check": 1.0,
+        "result_check": 0.0
+      },
+      "feedback": "Result does not match gold (score=0.00): partial overlap 0/2",
+      "execution_time_ms": 6847.764874983113,
+      "cached": true
+    }
+  ]
+}

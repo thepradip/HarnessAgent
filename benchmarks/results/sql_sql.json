@@ -1,0 +1,86 @@
+{
+  "run_id": "1ab0beda1e8b",
+  "agent_type": "sql",
+  "dataset": "sql",
+  "n_cases": 3,
+  "overall_pass_rate": 0.0,
+  "execution_accuracy": 0.0,
+  "avg_reward": 0.4833,
+  "elapsed_seconds": 27.43,
+  "by_hardness": {
+    "easy": {
+      "count": 2,
+      "passed": 0,
+      "exec": 0,
+      "pass_rate": 0.0,
+      "exec_acc_rate": 0.0
+    },
+    "medium": {
+      "count": 1,
+      "passed": 0,
+      "exec": 0,
+      "pass_rate": 0.0,
+      "exec_acc_rate": 0.0
+    }
+  },
+  "step_pass_rates": {
+    "schema_check": 1.0,
+    "syntax_check": 1.0,
+    "execution_check": 0.0,
+    "result_check": 0.0,
+    "quality_check": 0.6667
+  },
+  "failure_distribution": {
+    "Execution error": 3
+  },
+  "cases": [
+    {
+      "case_id": "sql_01",
+      "task": "How many employees are there?",
+      "hardness": "easy",
+      "verdict": "partial",
+      "overall_reward": 0.625,
+      "step_scores": {
+        "schema_check": 1.0,
+        "syntax_check": 1.0,
+        "execution_check": 0.0,
+        "result_check": 0.5,
+        "quality_check": 1.0
+      },
+      "feedback": "Execution error: no result | SQL is structurally similar to gold but not identical.",
+      "generated": "SELECT COUNT(*) FROM employees;"
+    },
+    {
+      "case_id": "sql_02",
+      "task": "What is the average salary?",
+      "hardness": "easy",
+      "verdict": "partial",
+      "overall_reward": 0.45,
+      "step_scores": {
+        "schema_check": 1.0,
+        "syntax_check": 1.0,
+        "execution_check": 0.0,
+        "result_check": 0.0,
+        "quality_check": 1.0
+      },
+      "feedback": "Execution error: no result | SQL differs significantly from gold — check logic and table selection.",
+      "generated": "SELECT AVG(salary) AS average_salary FROM employees;"
+    },
+    {
+      "case_id": "sql_03",
+      "task": "List employees by department.",
+      "hardness": "medium",
+      "verdict": "incorrect",
+      "overall_reward": 0.375,
+      "step_scores": {
+        "schema_check": 1.0,
+        "syntax_check": 1.0,
+        "execution_check": 0.0,
+        "result_check": 0.0,
+        "quality_check": 0.5
+      },
+      "feedback": "Execution error: no result | SQL differs significantly from gold — check logic and table selection. | Use the employees table columns directly (SELECT name, department FROM employees ORDER BY department) instead of assuming a departments join and reversing the expected column order.",
+      "generated": "SELECT d.name AS department, e.name AS employee\nFROM employees AS e\nJOIN departments AS d ON e.department_id = d.id\nORDER BY d.name, e.name;"
+    }
+  ]
+}

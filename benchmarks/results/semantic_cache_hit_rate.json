@@ -1,0 +1,71 @@
+{
+  "benchmark": "semantic_cache_hit_rate",
+  "embedder": "all-MiniLM-L6-v2",
+  "real_embeddings": true,
+  "seed_queries": 15,
+  "test_cases": 20,
+  "tier_avg_cosine": {
+    "near_exact": 0.9865,
+    "minor_rephrase": 0.9427,
+    "paraphrase": 0.5355,
+    "decoy": 0.0828
+  },
+  "best_zero_fp_threshold": {
+    "threshold": 0.99,
+    "near_exact_hit_rate": 0.4,
+    "minor_rephrase_hit_rate": 0.0,
+    "paraphrase_hit_rate": 0.0,
+    "decoy_hit_rate": 0.0,
+    "lookup_p50_ms": 8.77
+  },
+  "per_threshold": [
+    {
+      "threshold": 0.7,
+      "near_exact_hit_rate": 1.0,
+      "minor_rephrase_hit_rate": 1.0,
+      "paraphrase_hit_rate": 0.4,
+      "decoy_hit_rate": 0.0,
+      "lookup_p50_ms": 8.05
+    },
+    {
+      "threshold": 0.8,
+      "near_exact_hit_rate": 1.0,
+      "minor_rephrase_hit_rate": 1.0,
+      "paraphrase_hit_rate": 0.2,
+      "decoy_hit_rate": 0.0,
+      "lookup_p50_ms": 8.23
+    },
+    {
+      "threshold": 0.9,
+      "near_exact_hit_rate": 1.0,
+      "minor_rephrase_hit_rate": 1.0,
+      "paraphrase_hit_rate": 0.2,
+      "decoy_hit_rate": 0.0,
+      "lookup_p50_ms": 9.1
+    },
+    {
+      "threshold": 0.95,
+      "near_exact_hit_rate": 1.0,
+      "minor_rephrase_hit_rate": 0.2,
+      "paraphrase_hit_rate": 0.0,
+      "decoy_hit_rate": 0.0,
+      "lookup_p50_ms": 7.88
+    },
+    {
+      "threshold": 0.97,
+      "near_exact_hit_rate": 1.0,
+      "minor_rephrase_hit_rate": 0.2,
+      "paraphrase_hit_rate": 0.0,
+      "decoy_hit_rate": 0.0,
+      "lookup_p50_ms": 8.63
+    },
+    {
+      "threshold": 0.99,
+      "near_exact_hit_rate": 0.4,
+      "minor_rephrase_hit_rate": 0.0,
+      "paraphrase_hit_rate": 0.0,
+      "decoy_hit_rate": 0.0,
+      "lookup_p50_ms": 8.77
+    }
+  ]
+}

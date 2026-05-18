@@ -1,0 +1,69 @@
+{
+  "run_id": "a2c389df4c07",
+  "agent_type": "base",
+  "dataset": "base",
+  "n_cases": 3,
+  "overall_pass_rate": 1.0,
+  "execution_accuracy": 1.0,
+  "avg_reward": 0.9767,
+  "elapsed_seconds": 6.21,
+  "by_hardness": {
+    "easy": {
+      "count": 3,
+      "passed": 3,
+      "exec": 3,
+      "pass_rate": 1.0,
+      "exec_acc_rate": 1.0
+    }
+  },
+  "step_pass_rates": {
+    "format_check": 0.6667,
+    "answer_check": 1.0,
+    "reasoning_check": 1.0
+  },
+  "failure_distribution": {},
+  "cases": [
+    {
+      "case_id": "base_01",
+      "task": "What is 2 + 2?",
+      "hardness": "easy",
+      "verdict": "correct",
+      "overall_reward": 1.0,
+      "step_scores": {
+        "format_check": 1.0,
+        "answer_check": 1.0,
+        "reasoning_check": 1.0
+      },
+      "feedback": "All checks passed.",
+      "generated": "2 + 2 = 4."
+    },
+    {
+      "case_id": "base_02",
+      "task": "What is the capital of France?",
+      "hardness": "easy",
+      "verdict": "correct",
+      "overall_reward": 0.93,
+      "step_scores": {
+        "format_check": 0.3,
+        "answer_check": 1.0,
+        "reasoning_check": 1.0
+      },
+      "feedback": "Response is too short (6 chars). Provide a complete answer.",
+      "generated": "Paris."
+    },
+    {
+      "case_id": "base_03",
+      "task": "If John has 5 apples and gives 2 away, how many does he have?",
+      "hardness": "easy",
+      "verdict": "correct",
+      "overall_reward": 1.0,
+      "step_scores": {
+        "format_check": 1.0,
+        "answer_check": 1.0,
+        "reasoning_check": 1.0
+      },
+      "feedback": "All checks passed.",
+      "generated": "John has **3 apples** left."
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "benchmark": "hermes_real",
+  "summary": {
+    "n_train_tasks": 50,
+    "n_eval_tasks": 20,
+    "pre_patch_pass1": 0.4,
+    "post_patch_pass1": 0.46,
+    "improvement_abs": 0.06,
+    "improvement_pct": 6.0,
+    "seed_failures": 30,
+    "cycles_run": 3,
+    "converged_at_cycle": null,
+    "patches_applied": 0,
+    "agent": "NexusSql",
+    "model": "gpt-5.5 (Azure)",
+    "dataset": "gretelai/synthetic_text_to_sql",
+    "eval_method": "real SQLite execution + result-set comparison"
+  },
+  "cycles": [
+    {
+      "cycle": 1,
+      "elapsed_ms": 26191.8,
+      "patch_applied": false,
+      "patch_score": null,
+      "reason": "Patch generator returned no proposal."
+    },
+    {
+      "cycle": 2,
+      "elapsed_ms": 12132.6,
+      "patch_applied": false,
+      "patch_score": null,
+      "reason": "Patch generator returned no proposal."
+    },
+    {
+      "cycle": 3,
+      "elapsed_ms": 186823.8,
+      "patch_applied": false,
+      "patch_score": 0.25,
+      "reason": "Score 0.250 < threshold 0.600 \u2014 patch rejected."
+    }
+  ]
+}

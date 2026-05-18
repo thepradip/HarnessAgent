@@ -1,0 +1,82 @@
+{
+  "run_id": "b0d022b569bb",
+  "agent_type": "code",
+  "dataset": "code",
+  "n_cases": 3,
+  "overall_pass_rate": 0.0,
+  "execution_accuracy": 0.0,
+  "avg_reward": 0.235,
+  "elapsed_seconds": 45.9,
+  "by_hardness": {
+    "easy": {
+      "count": 2,
+      "passed": 0,
+      "exec": 0,
+      "pass_rate": 0.0,
+      "exec_acc_rate": 0.0
+    },
+    "medium": {
+      "count": 1,
+      "passed": 0,
+      "exec": 0,
+      "pass_rate": 0.0,
+      "exec_acc_rate": 0.0
+    }
+  },
+  "step_pass_rates": {
+    "syntax_check": 1.0,
+    "execution_check": 0.0,
+    "output_check": 0.0,
+    "quality_check": 1.0
+  },
+  "failure_distribution": {
+    "Error": 3
+  },
+  "cases": [
+    {
+      "case_id": "code_01",
+      "task": "Write a Python function `reverse_string(s)` that reverses a string.",
+      "hardness": "easy",
+      "verdict": "incorrect",
+      "overall_reward": 0.235,
+      "step_scores": {
+        "syntax_check": 1.0,
+        "execution_check": 0.0,
+        "output_check": 0.0,
+        "quality_check": 0.9
+      },
+      "feedback": "Error: None | Output mismatch. Got: ''. Expected: 'olleh'.",
+      "generated": "def reverse_string(s):\n    return s[::-1]"
+    },
+    {
+      "case_id": "code_02",
+      "task": "Write a Python function `is_palindrome(s)` that returns True if s is a palindrome.",
+      "hardness": "easy",
+      "verdict": "incorrect",
+      "overall_reward": 0.235,
+      "step_scores": {
+        "syntax_check": 1.0,
+        "execution_check": 0.0,
+        "output_check": 0.0,
+        "quality_check": 0.9
+      },
+      "feedback": "Error: None | Output mismatch. Got: ''. Expected: 'def is_palindrome(s): return s == s[::-1]'.",
+      "generated": "def is_palindrome(s):\n    return s == s[::-1]"
+    },
+    {
+      "case_id": "code_03",
+      "task": "Write a Python function `fibonacci(n)` that returns the nth Fibonacci number.",
+      "hardness": "medium",
+      "verdict": "incorrect",
+      "overall_reward": 0.235,
+      "step_scores": {
+        "syntax_check": 1.0,
+        "execution_check": 0.0,
+        "output_check": 0.0,
+        "quality_check": 0.9
+      },
+      "feedback": "Error: None | Output mismatch. Got: ''. Expected: 'def fibonacci(n): a,b=0,1\\n  for _ in range(n): a,b=b,a+b\\n  return a'.",
+      "generated": "def fibonacci(n):\n    if n < 0:\n        raise ValueError(\"n must be non-negative\")\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a"
+    }
+  ]
+}

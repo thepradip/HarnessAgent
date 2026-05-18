@@ -1,0 +1,299 @@
+{
+  "benchmark": "graphrag_token_efficiency",
+  "summary": {
+    "naive_avg_tokens": 2208.8,
+    "graphrag_avg_tokens": 378.1,
+    "overall_savings_pct": 82.9,
+    "avg_coverage_pct": 100.0,
+    "strategy_breakdown": {
+      "vector_primary": 19,
+      "graph_primary": 1
+    },
+    "query_count": 20,
+    "schema_tables": 10
+  },
+  "per_query": [
+    {
+      "query_id": "q01",
+      "query": "How many orders did user 42 place in the last 30 days?",
+      "expected_tables": [
+        "orders",
+        "users"
+      ],
+      "naive_tokens": 2278,
+      "graphrag_tokens": 378,
+      "savings_pct": 83.4,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.71
+    },
+    {
+      "query_id": "q02",
+      "query": "Show all products with inventory_count below 10",
+      "expected_tables": [
+        "products"
+      ],
+      "naive_tokens": 2263,
+      "graphrag_tokens": 367,
+      "savings_pct": 83.8,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 32.29
+    },
+    {
+      "query_id": "q03",
+      "query": "What is the total revenue from completed orders this month?",
+      "expected_tables": [
+        "orders"
+      ],
+      "naive_tokens": 2144,
+      "graphrag_tokens": 378,
+      "savings_pct": 82.4,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.69
+    },
+    {
+      "query_id": "q04",
+      "query": "List the top 5 users by number of orders placed",
+      "expected_tables": [
+        "orders",
+        "users"
+      ],
+      "naive_tokens": 2160,
+      "graphrag_tokens": 406,
+      "savings_pct": 81.2,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.33
+    },
+    {
+      "query_id": "q05",
+      "query": "Which products have never been ordered?",
+      "expected_tables": [
+        "products",
+        "order_items"
+      ],
+      "naive_tokens": 2263,
+      "graphrag_tokens": 367,
+      "savings_pct": 83.8,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.31
+    },
+    {
+      "query_id": "q06",
+      "query": "What is the average order value by payment method?",
+      "expected_tables": [
+        "orders",
+        "payments"
+      ],
+      "naive_tokens": 2161,
+      "graphrag_tokens": 378,
+      "savings_pct": 82.5,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.32
+    },
+    {
+      "query_id": "q07",
+      "query": "Find all reviews with a rating below 3 for electronics products",
+      "expected_tables": [
+        "reviews",
+        "products",
+        "categories"
+      ],
+      "naive_tokens": 2263,
+      "graphrag_tokens": 354,
+      "savings_pct": 84.4,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.58
+    },
+    {
+      "query_id": "q08",
+      "query": "How many active sessions are running right now?",
+      "expected_tables": [
+        "sessions"
+      ],
+      "naive_tokens": 2161,
+      "graphrag_tokens": 185,
+      "savings_pct": 91.4,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.49
+    },
+    {
+      "query_id": "q09",
+      "query": "Which promotions expire in the next 7 days?",
+      "expected_tables": [
+        "promotions"
+      ],
+      "naive_tokens": 2161,
+      "graphrag_tokens": 245,
+      "savings_pct": 88.7,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.26
+    },
+    {
+      "query_id": "q10",
+      "query": "Show the shipping addresses for all orders with status 'pending'",
+      "expected_tables": [
+        "orders",
+        "addresses",
+        "users"
+      ],
+      "naive_tokens": 2239,
+      "graphrag_tokens": 411,
+      "savings_pct": 81.6,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.62
+    },
+    {
+      "query_id": "q11",
+      "query": "What is the total quantity sold for each product category?",
+      "expected_tables": [
+        "order_items",
+        "products",
+        "categories"
+      ],
+      "naive_tokens": 2265,
+      "graphrag_tokens": 368,
+      "savings_pct": 83.8,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.32
+    },
+    {
+      "query_id": "q12",
+      "query": "List users who placed an order but never left a review",
+      "expected_tables": [
+        "orders",
+        "reviews",
+        "users"
+      ],
+      "naive_tokens": 2201,
+      "graphrag_tokens": 547,
+      "savings_pct": 75.1,
+      "strategy": "graph_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.69
+    },
+    {
+      "query_id": "q13",
+      "query": "What is the most popular product in the 'Electronics' category?",
+      "expected_tables": [
+        "order_items",
+        "products",
+        "categories"
+      ],
+      "naive_tokens": 2216,
+      "graphrag_tokens": 368,
+      "savings_pct": 83.4,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.32
+    },
+    {
+      "query_id": "q14",
+      "query": "Show the payment method breakdown for orders over $500",
+      "expected_tables": [
+        "payments",
+        "orders"
+      ],
+      "naive_tokens": 2144,
+      "graphrag_tokens": 380,
+      "savings_pct": 82.3,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.31
+    },
+    {
+      "query_id": "q15",
+      "query": "Which users have used a promotion code more than once?",
+      "expected_tables": [
+        "orders",
+        "promotions"
+      ],
+      "naive_tokens": 2163,
+      "graphrag_tokens": 521,
+      "savings_pct": 75.9,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.38
+    },
+    {
+      "query_id": "q16",
+      "query": "Find the average session duration for premium plan users",
+      "expected_tables": [
+        "sessions",
+        "users"
+      ],
+      "naive_tokens": 2201,
+      "graphrag_tokens": 408,
+      "savings_pct": 81.5,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.31
+    },
+    {
+      "query_id": "q17",
+      "query": "How many distinct products were ordered alongside product 77?",
+      "expected_tables": [
+        "order_items"
+      ],
+      "naive_tokens": 2263,
+      "graphrag_tokens": 368,
+      "savings_pct": 83.7,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.31
+    },
+    {
+      "query_id": "q18",
+      "query": "Show the refund rate (failed payments / total payments) by month",
+      "expected_tables": [
+        "payments"
+      ],
+      "naive_tokens": 2160,
+      "graphrag_tokens": 242,
+      "savings_pct": 88.8,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.26
+    },
+    {
+      "query_id": "q19",
+      "query": "List all order_items for orders placed by users in California",
+      "expected_tables": [
+        "order_items",
+        "orders",
+        "users",
+        "addresses"
+      ],
+      "naive_tokens": 2207,
+      "graphrag_tokens": 521,
+      "savings_pct": 76.4,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.35
+    },
+    {
+      "query_id": "q20",
+      "query": "What is the average rating for products ordered more than 100 times?",
+      "expected_tables": [
+        "reviews",
+        "order_items",
+        "products"
+      ],
+      "naive_tokens": 2263,
+      "graphrag_tokens": 369,
+      "savings_pct": 83.7,
+      "strategy": "vector_primary",
+      "coverage_pct": 100.0,
+      "retrieval_ms": 0.3
+    }
+  ]
+}

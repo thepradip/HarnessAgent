@@ -1,0 +1,49 @@
+{
+  "benchmark": "span_recording_overhead",
+  "summary": {
+    "iterations": 2000,
+    "backend": "fakeredis",
+    "baseline_p50_us": 0.1,
+    "start_end_span_net_p50_us": 871.7,
+    "context_manager_net_p50_us": 876.9,
+    "set_llm_usage_net_p50_us": 0.0
+  },
+  "measurements": [
+    {
+      "label": "Baseline: bare async no-op",
+      "p50_us": 0.1,
+      "p95_us": 0.1,
+      "p99_us": 0.1,
+      "avg_us": 0.1,
+      "stdev_us": 0.0,
+      "n": 2000
+    },
+    {
+      "label": "start_span + end_span",
+      "p50_us": 871.8,
+      "p95_us": 953.7,
+      "p99_us": 1100.6,
+      "avg_us": 881.8,
+      "stdev_us": 45.1,
+      "n": 2000
+    },
+    {
+      "label": "async with recorder.span(...)",
+      "p50_us": 877.0,
+      "p95_us": 945.1,
+      "p99_us": 1071.1,
+      "avg_us": 881.3,
+      "stdev_us": 40.8,
+      "n": 2000
+    },
+    {
+      "label": "set_llm_usage (sync annotation)",
+      "p50_us": 0.1,
+      "p95_us": 0.3,
+      "p99_us": 1.0,
+      "avg_us": 0.2,
+      "stdev_us": 0.5,
+      "n": 2000
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "benchmark": "hermes_self_improvement",
+  "summary": {
+    "seed_failure_count": 10,
+    "pre_patch_pass1": 0.15,
+    "post_patch_pass1": 0.85,
+    "improvement_abs": 0.7,
+    "improvement_pct": 70.0,
+    "cycles_run": 5,
+    "converged_at_cycle": 1,
+    "patches_applied": 4,
+    "prompt_size_increase_chars": 2112,
+    "agent_runner_total_calls": 65
+  },
+  "cycles": [
+    {
+      "cycle": 1,
+      "elapsed_ms": 50.4,
+      "patch_proposed": true,
+      "patch_applied": true,
+      "patch_score": 0.8,
+      "reason": "Score 0.800 >= threshold 0.700 and auto_apply=True \u2014 patch applied."
+    },
+    {
+      "cycle": 2,
+      "elapsed_ms": 1.0,
+      "patch_proposed": true,
+      "patch_applied": true,
+      "patch_score": 0.8,
+      "reason": "Score 0.800 >= threshold 0.700 and auto_apply=True \u2014 patch applied."
+    },
+    {
+      "cycle": 3,
+      "elapsed_ms": 0.8,
+      "patch_proposed": true,
+      "patch_applied": true,
+      "patch_score": 1.0,
+      "reason": "Score 1.000 >= threshold 0.700 and auto_apply=True \u2014 patch applied."
+    },
+    {
+      "cycle": 4,
+      "elapsed_ms": 0.9,
+      "patch_proposed": true,
+      "patch_applied": false,
+      "patch_score": 0.6,
+      "reason": "Score 0.600 < threshold 0.700 \u2014 patch rejected."
+    },
+    {
+      "cycle": 5,
+      "elapsed_ms": 0.8,
+      "patch_proposed": true,
+      "patch_applied": true,
+      "patch_score": 1.0,
+      "reason": "Score 1.000 >= threshold 0.700 and auto_apply=True \u2014 patch applied."
+    }
+  ]
+}
