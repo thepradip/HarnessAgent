@@ -1,0 +1,1557 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HarnessAgent (HaaS) — Technical Documentation v2</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #161b22;
+      --surface-2: #1c2333;
+      --surface-3: #21262d;
+      --border: #30363d;
+      --ink: #e6edf3;
+      --muted: #8b949e;
+      --accent: #388bfd;
+      --accent-2: #3fb950;
+      --accent-3: #f78166;
+      --accent-4: #d2a8ff;
+      --accent-5: #79c0ff;
+      --warn: #cca700;
+      --tag-bg: #1f2937;
+      --tag-color: #93c5fd;
+      --code-bg: #161b22;
+      --radius: 6px;
+      --sidebar-w: 280px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 15px;
+      line-height: 1.6;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body { background: var(--bg); color: var(--ink); min-height: 100vh; display: flex; }
+
+    /* ── Sidebar ───────────────────────────────────── */
+    #sidebar {
+      width: var(--sidebar-w); min-width: var(--sidebar-w); height: 100vh;
+      background: var(--surface); border-right: 1px solid var(--border);
+      position: sticky; top: 0; overflow-y: auto; display: flex; flex-direction: column;
+      padding: 0 0 40px;
+    }
+    .sidebar-header {
+      padding: 22px 20px 16px; border-bottom: 1px solid var(--border);
+      background: var(--surface); position: sticky; top: 0; z-index: 2;
+    }
+    .sidebar-logo { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+    .sidebar-logo .icon {
+      width: 32px; height: 32px; background: var(--accent); border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-size: 14px; color: white; flex-shrink: 0;
+    }
+    .sidebar-logo strong { color: var(--ink); font-size: 15px; }
+    .sidebar-logo span { color: var(--muted); font-size: 11px; display: block; }
+    .sidebar-search {
+      margin: 12px 16px 0;
+      background: var(--surface-3); border: 1px solid var(--border); border-radius: var(--radius);
+      display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+    }
+    .sidebar-search input {
+      background: none; border: none; outline: none; color: var(--ink); width: 100%; font-size: 13px;
+    }
+    .sidebar-search input::placeholder { color: var(--muted); }
+    .nav-group { padding: 16px 0 0; }
+    .nav-group-label {
+      padding: 0 20px 6px; font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--muted);
+    }
+    .nav-item {
+      display: flex; align-items: center; gap: 8px; padding: 6px 20px;
+      color: var(--muted); text-decoration: none; font-size: 13px; cursor: pointer;
+      border-left: 2px solid transparent; transition: all .12s;
+    }
+    .nav-item:hover { color: var(--ink); background: rgba(255,255,255,.04); }
+    .nav-item.active { color: var(--accent); border-left-color: var(--accent); background: rgba(56,139,253,.08); }
+    .nav-item .dot {
+      width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0;
+    }
+    .nav-item .badge {
+      margin-left: auto; background: var(--surface-3); color: var(--muted);
+      font-size: 10px; padding: 1px 6px; border-radius: 999px; font-weight: 600;
+    }
+
+    /* ── Main ──────────────────────────────────────── */
+    #main { flex: 1; min-width: 0; overflow-y: auto; }
+    .topbar {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 14px 40px; display: flex; align-items: center; justify-content: space-between;
+      position: sticky; top: 0; z-index: 3;
+    }
+    .topbar-breadcrumb { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+    .topbar-breadcrumb strong { color: var(--ink); }
+    .topbar-actions { display: flex; gap: 8px; }
+    .topbar-btn {
+      background: var(--surface-3); border: 1px solid var(--border); color: var(--muted);
+      padding: 5px 12px; border-radius: var(--radius); font-size: 12px; cursor: pointer;
+      transition: all .12s;
+    }
+    .topbar-btn:hover { color: var(--ink); border-color: var(--accent); }
+    .content { padding: 40px; max-width: 1000px; }
+    .section { margin-bottom: 64px; }
+
+    /* ── Typography ────────────────────────────────── */
+    h1 { font-size: 32px; font-weight: 700; letter-spacing: -.02em; line-height: 1.2; margin-bottom: 12px; color: var(--ink); }
+    h2 { font-size: 22px; font-weight: 700; margin-top: 40px; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 17px; font-weight: 700; margin-top: 28px; margin-bottom: 10px; color: var(--accent-5); }
+    h4 { font-size: 14px; font-weight: 700; margin-top: 18px; margin-bottom: 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+    p { margin-bottom: 12px; color: var(--muted); }
+    p strong { color: var(--ink); }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    ul, ol { padding-left: 22px; margin-bottom: 12px; }
+    li { margin-bottom: 4px; color: var(--muted); }
+    li strong, li code { color: var(--ink); }
+
+    /* ── Code ──────────────────────────────────────── */
+    code {
+      background: var(--surface-3); color: var(--accent-4); padding: 1px 5px;
+      border-radius: 4px; font-family: "SF Mono", "Fira Code", "Consolas", monospace; font-size: 13px;
+    }
+    pre {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 16px 20px; overflow-x: auto; margin-bottom: 16px; position: relative;
+    }
+    pre code { background: none; color: var(--ink); padding: 0; font-size: 13px; line-height: 1.6; }
+    .code-lang {
+      position: absolute; top: 8px; right: 10px; font-size: 10px; color: var(--muted);
+      font-family: inherit; text-transform: uppercase; letter-spacing: .08em;
+    }
+    /* Syntax highlight spans */
+    .kw  { color: #ff7b72; }   /* keywords */
+    .fn  { color: #d2a8ff; }   /* function names */
+    .st  { color: #a5d6ff; }   /* strings */
+    .cm  { color: #8b949e; font-style: italic; } /* comments */
+    .nm  { color: #79c0ff; }   /* numbers / consts */
+    .cl  { color: #ffa657; }   /* class names */
+    .at  { color: #e3b341; }   /* decorators / attributes */
+    .op  { color: #e6edf3; }   /* operators */
+
+    /* ── Cards & Tables ────────────────────────────── */
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px; margin-bottom: 16px;
+    }
+    .card h3 { margin-top: 0; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+    .stat-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 16px; display: flex; flex-direction: column; gap: 4px;
+    }
+    .stat-card .num { font-size: 28px; font-weight: 700; color: var(--ink); line-height: 1; }
+    .stat-card .label { font-size: 12px; color: var(--muted); }
+    .stat-card .sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+    table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13px; }
+    thead th {
+      text-align: left; padding: 8px 12px; background: var(--surface-3); color: var(--muted);
+      font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+      border-bottom: 1px solid var(--border);
+    }
+    tbody td { padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--muted); vertical-align: top; }
+    tbody td:first-child code { color: var(--accent-5); }
+    tbody tr:hover td { background: rgba(255,255,255,.02); }
+    tbody tr:last-child td { border-bottom: none; }
+
+    /* ── Tags / Pills ──────────────────────────────── */
+    .tag {
+      display: inline-flex; align-items: center; gap: 4px; background: var(--tag-bg);
+      color: var(--tag-color); font-size: 11px; font-weight: 600; padding: 2px 8px;
+      border-radius: 999px; border: 1px solid rgba(56,139,253,.2); margin: 0 3px 3px 0;
+    }
+    .tag.green { color: var(--accent-2); background: rgba(63,185,80,.12); border-color: rgba(63,185,80,.2); }
+    .tag.red { color: var(--accent-3); background: rgba(247,129,102,.12); border-color: rgba(247,129,102,.2); }
+    .tag.purple { color: var(--accent-4); background: rgba(210,168,255,.12); border-color: rgba(210,168,255,.2); }
+    .tag.yellow { color: var(--warn); background: rgba(204,167,0,.12); border-color: rgba(204,167,0,.2); }
+
+    /* ── Module Cards ──────────────────────────────── */
+    .module-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      margin-bottom: 20px; overflow: hidden;
+    }
+    .module-header {
+      padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex;
+      align-items: flex-start; gap: 14px;
+    }
+    .module-icon {
+      width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center;
+      justify-content: center; font-size: 16px; flex-shrink: 0; margin-top: 1px;
+    }
+    .module-header h3 { margin: 0 0 3px; font-size: 15px; color: var(--ink); }
+    .module-header p { margin: 0; font-size: 12px; color: var(--muted); }
+    .module-body { padding: 14px 18px; }
+    .method-list { display: grid; gap: 8px; }
+    .method {
+      background: var(--surface-3); border-radius: var(--radius); padding: 10px 14px;
+      border-left: 3px solid var(--accent);
+    }
+    .method.tool { border-left-color: var(--accent-2); }
+    .method.event { border-left-color: var(--accent-4); }
+    .method.warn { border-left-color: var(--warn); }
+    .method-sig { font-family: "SF Mono","Fira Code",monospace; font-size: 12px; color: var(--accent-5); margin-bottom: 3px; }
+    .method-desc { font-size: 12px; color: var(--muted); }
+
+    /* ── Architecture diagram ──────────────────────── */
+    .arch-box {
+      border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px;
+      background: var(--surface-2); margin-bottom: 8px; position: relative;
+    }
+    .arch-box .arch-label {
+      font-size: 11px; color: var(--muted); font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; margin-bottom: 8px;
+    }
+    .arch-box .arch-items { display: flex; gap: 8px; flex-wrap: wrap; }
+    .arch-chip {
+      background: var(--surface-3); border: 1px solid var(--border); border-radius: 4px;
+      padding: 4px 10px; font-size: 12px; color: var(--muted);
+    }
+    .arch-chip.blue { border-color: rgba(56,139,253,.4); color: var(--accent-5); background: rgba(56,139,253,.1); }
+    .arch-chip.green { border-color: rgba(63,185,80,.4); color: var(--accent-2); background: rgba(63,185,80,.1); }
+    .arch-chip.purple { border-color: rgba(210,168,255,.4); color: var(--accent-4); background: rgba(210,168,255,.1); }
+    .arch-chip.orange { border-color: rgba(204,167,0,.4); color: var(--warn); background: rgba(204,167,0,.1); }
+    .arch-chip.red { border-color: rgba(247,129,102,.4); color: var(--accent-3); background: rgba(247,129,102,.1); }
+    .arch-arrow { text-align: center; color: var(--border); font-size: 18px; margin: 2px 0; }
+
+    /* ── Callout ────────────────────────────────────── */
+    .callout {
+      border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px;
+      margin-bottom: 16px; display: flex; gap: 12px;
+    }
+    .callout.info { border-left: 3px solid var(--accent); background: rgba(56,139,253,.05); }
+    .callout.warn { border-left: 3px solid var(--warn); background: rgba(204,167,0,.05); }
+    .callout.success { border-left: 3px solid var(--accent-2); background: rgba(63,185,80,.05); }
+    .callout .callout-icon { font-size: 16px; line-height: 1.6; flex-shrink: 0; }
+    .callout p { margin: 0; font-size: 13px; }
+
+    /* ── Span hierarchy vis ─────────────────────────── */
+    .span-tree { font-family: "SF Mono","Fira Code",monospace; font-size: 12px; line-height: 1.8; }
+    .span-row { display: flex; align-items: center; gap: 8px; }
+    .span-kind {
+      padding: 1px 8px; border-radius: 3px; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .06em; white-space: nowrap;
+    }
+    .span-kind.run { background: rgba(56,139,253,.2); color: #388bfd; }
+    .span-kind.llm { background: rgba(210,168,255,.2); color: #d2a8ff; }
+    .span-kind.tool { background: rgba(63,185,80,.2); color: #3fb950; }
+    .span-kind.guardrail { background: rgba(204,167,0,.2); color: #cca700; }
+    .span-kind.memory { background: rgba(121,192,255,.2); color: #79c0ff; }
+    .span-kind.handoff { background: rgba(247,129,102,.2); color: #f78166; }
+    .span-kind.eval { background: rgba(148,103,189,.2); color: #9467bd; }
+
+    /* ── Step pipeline ──────────────────────────────── */
+    .pipeline {
+      display: flex; align-items: stretch; gap: 0; margin-bottom: 16px; flex-wrap: wrap;
+    }
+    .pipeline-step {
+      background: var(--surface-2); border: 1px solid var(--border); padding: 10px 14px;
+      font-size: 12px; position: relative; flex: 1; min-width: 120px;
+    }
+    .pipeline-step:not(:last-child)::after {
+      content: "›"; position: absolute; right: -10px; top: 50%; transform: translateY(-50%);
+      color: var(--muted); font-size: 18px; z-index: 1;
+    }
+    .pipeline-step:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+    .pipeline-step:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+    .pipeline-step .ps-num { font-size: 10px; color: var(--muted); margin-bottom: 3px; }
+    .pipeline-step .ps-name { color: var(--ink); font-weight: 600; font-size: 12px; }
+    .pipeline-step .ps-desc { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    /* ── Results table highlight ────────────────────── */
+    .result-good { color: var(--accent-2); font-weight: 700; }
+    .result-num  { color: var(--accent-5); font-weight: 700; }
+
+    /* ── Scrollspy ──────────────────────────────────── */
+    .section[id] { scroll-margin-top: 80px; }
+
+    /* ── Responsive ─────────────────────────────────── */
+    @media (max-width: 900px) {
+      #sidebar { display: none; }
+      .content { padding: 24px 20px; }
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+      .topbar { padding: 12px 20px; }
+      .pipeline { flex-direction: column; }
+      .pipeline-step:not(:last-child)::after { content: "↓"; right: auto; left: 50%; top: auto; bottom: -14px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════
+     SIDEBAR
+═══════════════════════════════════════════════════ -->
+<nav id="sidebar">
+  <div class="sidebar-header">
+    <a class="sidebar-logo" href="#overview">
+      <div class="icon">H</div>
+      <div>
+        <strong>HarnessAgent</strong>
+        <span>Technical Reference v2 · HaaS 0.2</span>
+      </div>
+    </a>
+    <div class="sidebar-search">
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color:var(--muted);flex-shrink:0"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input id="search-input" placeholder="Search…" autocomplete="off">
+    </div>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">Getting Started</div>
+    <a class="nav-item active" href="#overview"><span class="dot"></span> Overview</a>
+    <a class="nav-item" href="#quickstart"><span class="dot"></span> Quick Start</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Core Subsystems</div>
+    <a class="nav-item" href="#llm-router"><span class="dot"></span> LLM Router</a>
+    <a class="nav-item" href="#context-engineering"><span class="dot"></span> Context Engineering</a>
+    <a class="nav-item" href="#feedback"><span class="dot"></span> Feedback Channel</a>
+    <a class="nav-item" href="#rlvr"><span class="dot"></span> RLVR</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Agents</div>
+    <a class="nav-item" href="#nexussql"><span class="dot"></span> NexusSql Agent</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Evaluation</div>
+    <a class="nav-item" href="#bench"><span class="dot"></span> General Benchmark</a>
+    <a class="nav-item" href="#results"><span class="dot"></span> Benchmark Results</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Operations</div>
+    <a class="nav-item" href="#safety"><span class="dot"></span> Safety &amp; HITL</a>
+    <a class="nav-item" href="#observability"><span class="dot"></span> Observability</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Reference</div>
+    <a class="nav-item" href="#api-reference"><span class="dot"></span> REST API</a>
+  </div>
+</nav>
+
+<!-- ═══════════════════════════════════════════════════
+     MAIN
+═══════════════════════════════════════════════════ -->
+<div id="main">
+  <div class="topbar">
+    <div class="topbar-breadcrumb">
+      <span>Docs</span><span style="color:var(--border)">›</span>
+      <strong id="current-section">Overview</strong>
+    </div>
+    <div class="topbar-actions">
+      <a class="topbar-btn" href="https://pypi.org/project/agent-haas/" target="_blank">PyPI</a>
+      <button class="topbar-btn" onclick="window.print()">Print</button>
+    </div>
+  </div>
+
+  <div class="content">
+
+<!-- ══════════════════════ OVERVIEW ══════════════════════ -->
+<section class="section" id="overview">
+  <h1>HarnessAgent <span style="color:var(--muted);font-size:20px;font-weight:400">(HaaS)</span></h1>
+  <p><strong>HarnessAgent</strong> is a 7-pillar production infrastructure layer for any AI agent framework. It does not replace your agent logic — it wraps it with everything production demands: resilient LLM routing, multi-tier context engineering, real-time feedback, online reinforcement learning, safety guardrails, full observability, and a REST API.</p>
+
+  <div class="callout info">
+    <div class="callout-icon">&#9432;</div>
+    <p><strong>Package name:</strong> <code>agent-haas</code> on PyPI. Import as <code>from haas import ...</code>. Current stable version: <strong>0.2.0</strong>.</p>
+  </div>
+
+  <h2>The Design Contract</h2>
+  <p>The core contract is intentionally minimal. Your framework implements a single method; the Harness takes care of everything else.</p>
+
+<pre><code><span class="kw">class</span> <span class="cl">MyAgent</span>(<span class="cl">BaseHaasAgent</span>):
+    <span class="kw">async def</span> <span class="fn">task_step</span>(<span class="op">self</span>, state: <span class="cl">AgentState</span>) -&gt; <span class="cl">StepResult</span>:
+        <span class="cm"># Your agent logic here — one step at a time</span>
+        response = <span class="kw">await</span> <span class="op">self</span>.llm.complete(state.messages)
+        <span class="kw">return</span> <span class="cl">StepResult</span>(output=response.text, done=<span class="nm">True</span>)
+
+<span class="cm"># The harness wraps execution end-to-end</span>
+trace_view = <span class="kw">await</span> harness.<span class="fn">run</span>(agent, task)
+<span class="cm"># → TraceView: spans, scores, token usage, cost, feedback log</span></code><span class="code-lang">python</span></pre>
+
+  <p>The harness calls <code>task_step</code> in a loop, injecting feedback, checking guardrails, recording spans, and computing rewards — all transparently.</p>
+
+  <h2>7 Production Pillars</h2>
+  <div class="grid-2">
+    <div class="card">
+      <h3 style="margin-top:0;color:var(--accent-5)">1 · LLM Router</h3>
+      <p>Health-aware multi-provider routing with circuit breaker, exponential backoff, and semantic response caching. Providers: OpenAI, Azure OpenAI, local vLLM/SGLang/llama.cpp.</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;color:var(--accent-2)">2 · Context Engineering</h3>
+      <p>Three-tier memory pipeline (L1 hot window → L2 semantic → L3 knowledge graph + schema store) with configurable token budget splits.</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;color:var(--accent-4)">3 · Real-time Feedback</h3>
+      <p>Mid-run corrections, hints, scores, and redirects delivered via Redis Streams. The agent polls before every LLM call and injects approved events automatically.</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;color:var(--accent-3)">4 · RLVR</h3>
+      <p>Online per-step reinforcement with domain-specific verifiers (SQL, Code, Reasoning). Advantage estimation drives few-shot reinforcement or Hermes self-improvement patches.</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;color:var(--warn)">5 · Safety &amp; HITL</h3>
+      <p>3-stage guardrail pipeline (input → step → output) with a human-in-the-loop approval gate backed by SSE push notifications and per-tenant policies.</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;color:var(--accent-5)">6 · Observability</h3>
+      <p>7 SpanKind types forming a full trace tree, 13 pre-defined Prometheus counters/gauges, MLflow experiment tracking, audit log with PII hashing.</p>
+    </div>
+  </div>
+  <div class="card" style="border-color:rgba(56,139,253,.3)">
+    <h3 style="margin-top:0;color:var(--accent)">7 · REST API</h3>
+    <p>FastAPI server exposing run management, streaming (SSE), trace inspection, feedback injection, eval triggers, and health checks. Multi-tenant JWT auth built in.</p>
+  </div>
+
+  <h2>Supported Frameworks</h2>
+  <div class="grid-3" style="margin-top:16px">
+    <div class="stat-card">
+      <div style="font-size:18px;font-weight:700;color:var(--accent-5)">LangGraph</div>
+      <div class="label">StateGraph adapter</div>
+      <div class="sub">harness.wrap(graph)</div>
+    </div>
+    <div class="stat-card">
+      <div style="font-size:18px;font-weight:700;color:var(--accent-4)">AutoGen</div>
+      <div class="label">ConversableAgent adapter</div>
+      <div class="sub">AutoGenHaasAdapter</div>
+    </div>
+    <div class="stat-card">
+      <div style="font-size:18px;font-weight:700;color:var(--accent-2)">CrewAI</div>
+      <div class="label">Crew adapter</div>
+      <div class="sub">CrewAIHaasAdapter</div>
+    </div>
+  </div>
+  <div class="grid-3">
+    <div class="stat-card">
+      <div style="font-size:18px;font-weight:700;color:var(--accent-3)">Agno</div>
+      <div class="label">Agno agent adapter</div>
+      <div class="sub">AgnoHaasAdapter</div>
+    </div>
+    <div class="stat-card">
+      <div style="font-size:18px;font-weight:700;color:var(--ink)">Native SQL</div>
+      <div class="label">NexusSqlAgent</div>
+      <div class="sub">Built-in, no adapter needed</div>
+    </div>
+    <div class="stat-card">
+      <div style="font-size:18px;font-weight:700;color:var(--muted)">Custom</div>
+      <div class="label">Implement task_step</div>
+      <div class="sub">BaseHaasAgent subclass</div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════ QUICK START ══════════════════════ -->
+<section class="section" id="quickstart">
+  <h2>Quick Start</h2>
+
+  <h3>Install</h3>
+<pre><code><span class="cm"># Core + all production extras</span>
+pip install agent-haas
+
+<span class="cm"># With optional vector / observability extras</span>
+pip install <span class="st">"agent-haas[vector,observe]"</span>
+
+<span class="cm"># Full install (includes all optional deps)</span>
+pip install <span class="st">"agent-haas[all]"</span></code><span class="code-lang">bash</span></pre>
+
+  <h3>Start infrastructure</h3>
+  <p>A Docker Compose file ships with the package to bring up Redis, Chroma, and the API server with a single command.</p>
+<pre><code><span class="cm"># Clone or copy the docker-compose.yml from the repo</span>
+docker compose up -d
+
+<span class="cm"># Verify all services are healthy</span>
+curl http://localhost:8000/health
+<span class="cm"># → {"status": "ok", "redis": "ok", "vector_store": "ok"}</span></code><span class="code-lang">bash</span></pre>
+
+  <h3>4-line integration</h3>
+  <p>The minimum viable integration — supply your agent class and a task string.</p>
+<pre><code><span class="kw">from</span> haas <span class="kw">import</span> Harness, HaasConfig
+
+harness = <span class="cl">Harness</span>(<span class="cl">HaasConfig</span>.<span class="fn">from_env</span>())          <span class="cm"># reads .env / env vars</span>
+trace   = <span class="kw">await</span> harness.<span class="fn">run</span>(<span class="cl">MyAgent</span>(), task=<span class="st">"analyse Q3 sales"</span>)
+<span class="fn">print</span>(trace.output, trace.cost_usd, trace.pass_rate)</code><span class="code-lang">python</span></pre>
+
+  <h3>First run with NexusSql (SQLAgent)</h3>
+<pre><code><span class="kw">from</span> haas <span class="kw">import</span> Harness, HaasConfig
+<span class="kw">from</span> haas.agents.nexussql <span class="kw">import</span> NexusSqlAgent
+
+<span class="cm"># Build harness from environment</span>
+config  = <span class="cl">HaasConfig</span>.<span class="fn">from_env</span>()
+harness = <span class="cl">Harness</span>(config)
+
+<span class="cm"># Instantiate the NexusSql agent (self-correcting, schema-aware)</span>
+agent = <span class="cl">NexusSqlAgent</span>.<span class="fn">from_config</span>(config, db_path=<span class="st">"./northwind.db"</span>)
+
+<span class="cm"># Run and inspect trace</span>
+trace = <span class="kw">await</span> harness.<span class="fn">run</span>(agent, task=<span class="st">"List top 10 customers by revenue in 2024"</span>)
+
+<span class="fn">print</span>(<span class="st">"SQL:"</span>,   trace.output)
+<span class="fn">print</span>(<span class="st">"Cost:"</span>,  trace.cost_usd)
+<span class="fn">print</span>(<span class="st">"Steps:"</span>, trace.step_count)
+<span class="fn">print</span>(<span class="st">"Score:"</span>, trace.rlvr_score)   <span class="cm"># correctness / quality / safety</span></code><span class="code-lang">python</span></pre>
+
+  <h3>Wrapping an existing LangGraph agent</h3>
+<pre><code><span class="kw">import</span> haas
+<span class="kw">from</span> langgraph.graph <span class="kw">import</span> StateGraph
+
+graph   = <span class="cl">StateGraph</span>(...)           <span class="cm"># your existing graph — unchanged</span>
+adapter = haas.<span class="fn">wrap</span>(graph)
+
+<span class="kw">async for</span> event <span class="kw">in</span> adapter.<span class="fn">run_with_harness</span>(ctx, {<span class="st">"input"</span>: <span class="st">"analyse sales"</span>}):
+    <span class="fn">print</span>(event.event_type, event.payload)</code><span class="code-lang">python</span></pre>
+
+  <div class="callout warn">
+    <div class="callout-icon">&#9888;</div>
+    <p>Set <code>OPENAI_API_KEY</code> (or <code>AZURE_OPENAI_API_KEY</code> + <code>AZURE_OPENAI_ENDPOINT</code>) in your <code>.env</code> before calling <code>from_env()</code>. See the LLM Router section for multi-provider configuration.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════ LLM ROUTER ══════════════════════ -->
+<section class="section" id="llm-router">
+  <h2>LLM Router</h2>
+  <p>The <code>LLMRouter</code> is the single point of contact between agent logic and LLM providers. It implements health-aware routing, circuit breaking, exponential backoff with jitter, and semantic response caching — all transparently to the caller.</p>
+
+  <h3>Health-aware routing</h3>
+  <p>Before each request the router checks a per-provider health cache with a <strong>5-second TTL</strong>. If the cached status is <code>UNHEALTHY</code> the provider is skipped without a network call. Health probes are lightweight HEAD requests to the provider's status endpoint.</p>
+
+<pre><code><span class="kw">from</span> haas.llm.router <span class="kw">import</span> <span class="cl">LLMRouter</span>
+<span class="kw">from</span> haas.llm.providers <span class="kw">import</span> <span class="cl">OpenAIProvider</span>, <span class="cl">AzureOpenAIProvider</span>
+
+router = <span class="cl">LLMRouter</span>()
+
+<span class="cm"># Register providers in priority order (0 = highest priority)</span>
+router.<span class="fn">register</span>(<span class="cl">OpenAIProvider</span>(model=<span class="st">"gpt-4o"</span>),         priority=<span class="nm">0</span>)
+router.<span class="fn">register</span>(<span class="cl">AzureOpenAIProvider</span>.<span class="fn">from_env</span>(),         priority=<span class="nm">1</span>)
+<span class="cm"># local vLLM fallback</span>
+router.<span class="fn">register</span>(<span class="cl">VLLMProvider</span>(base_url=<span class="st">"http://gpu01:8080"</span>), priority=<span class="nm">2</span>)
+
+response = <span class="kw">await</span> router.<span class="fn">complete</span>(messages, temperature=<span class="nm">0.2</span>)</code><span class="code-lang">python</span></pre>
+
+  <h3>Exponential backoff</h3>
+  <p>On a retryable error (rate-limit 429, server 5xx) the router applies exponential backoff with ±20% jitter <strong>before</strong> switching providers. The backoff sequence is:</p>
+  <ul>
+    <li>Attempt 1 → wait <strong>1 s ± 0.2 s</strong></li>
+    <li>Attempt 2 → wait <strong>2 s ± 0.4 s</strong></li>
+    <li>Attempt 3 → wait <strong>4 s ± 0.8 s</strong></li>
+    <li>After max retries exhausted on a provider → fall through to next priority level</li>
+  </ul>
+
+  <h3>Circuit Breaker</h3>
+  <p>Each provider has an independent circuit breaker that prevents cascading failures from overwhelming a degraded upstream.</p>
+
+  <div class="pipeline">
+    <div class="pipeline-step">
+      <div class="ps-num">STATE 1</div>
+      <div class="ps-name" style="color:var(--accent-2)">CLOSED</div>
+      <div class="ps-desc">Normal operation. Failures counted.</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">TRIGGER</div>
+      <div class="ps-name" style="color:var(--accent-3)">5 failures</div>
+      <div class="ps-desc">Opens in 0.01 ms</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">STATE 2</div>
+      <div class="ps-name" style="color:var(--accent-3)">OPEN</div>
+      <div class="ps-desc">All calls rejected. 60s cool-down.</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">STATE 3</div>
+      <div class="ps-name" style="color:var(--warn)">HALF_OPEN</div>
+      <div class="ps-desc">1 probe call allowed.</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">RECOVER</div>
+      <div class="ps-name" style="color:var(--accent-2)">2 successes</div>
+      <div class="ps-desc">→ CLOSED again</div>
+    </div>
+  </div>
+
+  <table>
+    <thead><tr><th>Parameter</th><th>Value</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>failure_threshold</code></td><td>5</td><td>Consecutive failures to open</td></tr>
+      <tr><td><code>time_to_open</code></td><td>0.01 ms</td><td>Measured; near-zero latency</td></tr>
+      <tr><td><code>recovery_timeout</code></td><td>60 s</td><td>OPEN → HALF_OPEN</td></tr>
+      <tr><td><code>success_threshold</code></td><td>2</td><td>HALF_OPEN → CLOSED</td></tr>
+      <tr><td><code>false_positive_trips</code></td><td>0</td><td>Verified across 3 scenarios</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Semantic LLM Cache</h3>
+  <p>Identical or semantically near-identical prompts are served from cache, eliminating redundant API calls and latency.</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h3 style="margin-top:0;font-size:14px;color:var(--accent-5)">Fast path — SHA-256 exact match</h3>
+      <p>The serialised message list is hashed with SHA-256. On a cache hit the stored response is returned without embedding computation. O(1) lookup.</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;font-size:14px;color:var(--accent-4)">Semantic path — cosine similarity</h3>
+      <p>If exact hash misses, the query embedding is compared against up to <strong>200</strong> cached entries. A hit is declared at cosine ≥ <strong>0.97</strong>. Verified 100% TPR, 0% FPR at this threshold.</p>
+    </div>
+  </div>
+
+<pre><code><span class="kw">from</span> haas.llm.cache <span class="kw">import</span> <span class="cl">SemanticLLMCache</span>
+
+cache = <span class="cl">SemanticLLMCache</span>(
+    similarity_threshold=<span class="nm">0.97</span>,   <span class="cm"># cosine threshold</span>
+    scan_cap=<span class="nm">200</span>,                 <span class="cm"># max entries scanned per lookup</span>
+    backend=<span class="st">"redis"</span>,              <span class="cm"># or "memory" for testing</span>
+)
+router = <span class="cl">LLMRouter</span>(cache=cache)
+
+<span class="cm"># First call — cache miss, API call made</span>
+r1 = <span class="kw">await</span> router.<span class="fn">complete</span>([{<span class="st">"role"</span>: <span class="st">"user"</span>, <span class="st">"content"</span>: <span class="st">"What is 2+2?"</span>}])
+
+<span class="cm"># Semantically equivalent — cache hit (no API call)</span>
+r2 = <span class="kw">await</span> router.<span class="fn">complete</span>([{<span class="st">"role"</span>: <span class="st">"user"</span>, <span class="st">"content"</span>: <span class="st">"What does 2+2 equal?"</span>}])
+<span class="fn">assert</span> r2.cache_hit <span class="op">==</span> <span class="nm">True</span></code><span class="code-lang">python</span></pre>
+
+  <h3>Azure OpenAI Support</h3>
+<pre><code><span class="kw">from</span> haas.llm.providers <span class="kw">import</span> <span class="cl">AzureOpenAIProvider</span>
+
+<span class="cm"># From explicit config</span>
+az = <span class="cl">AzureOpenAIProvider</span>(
+    endpoint=<span class="st">"https://my-resource.openai.azure.com/"</span>,
+    api_key=<span class="st">"..."</span>,
+    deployment_name=<span class="st">"gpt-4o"</span>,
+    api_version=<span class="st">"2024-08-01-preview"</span>,
+)
+
+<span class="cm"># Or auto-populate from environment variables</span>
+<span class="cm"># AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT</span>
+az = <span class="cl">AzureOpenAIProvider</span>.<span class="fn">from_env</span>()</code><span class="code-lang">python</span></pre>
+
+  <h3>Local inference (vLLM / SGLang / llama.cpp)</h3>
+<pre><code><span class="kw">from</span> haas.llm.providers <span class="kw">import</span> <span class="cl">VLLMProvider</span>, <span class="cl">SgLangProvider</span>, <span class="cl">LlamaCppProvider</span>
+
+<span class="cm"># vLLM — OpenAI-compatible endpoint</span>
+router.<span class="fn">register</span>(<span class="cl">VLLMProvider</span>(base_url=<span class="st">"http://gpu01:8080"</span>, model=<span class="st">"mistral-7b"</span>), priority=<span class="nm">1</span>)
+
+<span class="cm"># SGLang</span>
+router.<span class="fn">register</span>(<span class="cl">SgLangProvider</span>(base_url=<span class="st">"http://gpu02:30000"</span>), priority=<span class="nm">2</span>)
+
+<span class="cm"># llama.cpp server</span>
+router.<span class="fn">register</span>(<span class="cl">LlamaCppProvider</span>(base_url=<span class="st">"http://localhost:8080"</span>), priority=<span class="nm">3</span>)</code><span class="code-lang">python</span></pre>
+</section>
+
+<!-- ══════════════════════ CONTEXT ENGINEERING ══════════════════════ -->
+<section class="section" id="context-engineering">
+  <h2>Context Engineering (L1 / L2 / L3)</h2>
+  <p>The <code>ContextPipeline</code> assembles context for each LLM call from three tiers with configurable token budget splits. Each tier is independent and can be swapped or disabled.</p>
+
+  <div class="arch-box">
+    <div class="arch-label">ContextPipeline — default token budget split</div>
+    <div class="arch-items">
+      <span class="arch-chip blue">L1 ChatCache · 60%</span>
+      <span class="arch-chip green">L2 VectorCache · 25%</span>
+      <span class="arch-chip purple">L3 KnowledgeStore · 15%</span>
+    </div>
+  </div>
+
+  <h3>L1 — ChatCache (hot window)</h3>
+  <p>Redis-backed conversation window scoped by <code>run_id + skill_ns</code>. When the window grows beyond <strong>80% capacity</strong>, older messages are automatically offloaded to cold storage (paged LZ4-compressed JSONL) and the active window is trimmed. Retrieval is O(1) from Redis LRANGE.</p>
+
+  <table>
+    <thead><tr><th>Property</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td><code>scope key</code></td><td><code>run_id + skill_ns</code></td></tr>
+      <tr><td><code>backend</code></td><td>Redis LRANGE</td></tr>
+      <tr><td><code>offload trigger</code></td><td>80% of window capacity</td></tr>
+      <tr><td><code>offload target</code></td><td>Paged JSONL (LZ4 compressed)</td></tr>
+      <tr><td><code>default token budget</code></td><td>60% of total budget</td></tr>
+    </tbody>
+  </table>
+
+  <h3>L2 — VectorCache (semantic memory)</h3>
+  <p>Long-term semantic memory backed by Chroma, Qdrant, or Weaviate. At query time the pipeline embeds the current query and retrieves the top-k most relevant past memories. Only entries with cosine similarity ≥ <strong>0.70</strong> are included in the assembled context.</p>
+
+  <table>
+    <thead><tr><th>Property</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td><code>backends</code></td><td>Chroma · Qdrant · Weaviate</td></tr>
+      <tr><td><code>relevance threshold</code></td><td>0.70 cosine similarity</td></tr>
+      <tr><td><code>embedding model</code></td><td>all-MiniLM-L6-v2 (configurable)</td></tr>
+      <tr><td><code>default token budget</code></td><td>25% of total budget</td></tr>
+    </tbody>
+  </table>
+
+  <h3>L3 — KnowledgeStore</h3>
+  <p>Structured knowledge combining a SQL schema registry and a graph traversal cache.</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h3 style="margin-top:0;font-size:14px;color:var(--accent-5)">SchemaStore</h3>
+      <p>SQL schema registry. Call <code>store_from_sqlite(db_path)</code> to auto-index all tables, columns, types, and foreign keys. Supports keyword-based table routing when a query touches &gt;12 tables.</p>
+<pre style="margin-top:10px"><code><span class="kw">from</span> haas.context.l3 <span class="kw">import</span> <span class="cl">SchemaStore</span>
+
+store = <span class="cl">SchemaStore</span>()
+<span class="kw">await</span> store.<span class="fn">store_from_sqlite</span>(<span class="st">"./northwind.db"</span>)
+schema = <span class="kw">await</span> store.<span class="fn">get_relevant</span>(
+    query=<span class="st">"top customers by revenue"</span>,
+    max_tables=<span class="nm">8</span>,
+)</code><span class="code-lang">python</span></pre>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;font-size:14px;color:var(--accent-4)">KGCache (Knowledge Graph)</h3>
+      <p>Graph traversal over entity-relationship data. Backed by NetworkX in-memory (default) or Neo4j for production. Entries are retrieved by multi-hop traversal from seed entities found in the query.</p>
+    </div>
+  </div>
+
+  <h3>ContextPipeline — full assembly</h3>
+<pre><code><span class="kw">from</span> haas.context.pipeline <span class="kw">import</span> <span class="cl">ContextPipeline</span>
+<span class="kw">from</span> haas.context.l1 <span class="kw">import</span> <span class="cl">ChatCache</span>
+<span class="kw">from</span> haas.context.l2 <span class="kw">import</span> <span class="cl">VectorCache</span>
+<span class="kw">from</span> haas.context.l3 <span class="kw">import</span> <span class="cl">SchemaStore</span>, <span class="cl">KGCache</span>, <span class="cl">KnowledgeStore</span>
+
+pipeline = <span class="cl">ContextPipeline</span>(
+    l1=<span class="cl">ChatCache</span>(redis_url=<span class="st">"redis://localhost:6379"</span>),
+    l2=<span class="cl">VectorCache</span>(backend=<span class="st">"chroma"</span>, threshold=<span class="nm">0.70</span>),
+    l3=<span class="cl">KnowledgeStore</span>(schema=<span class="cl">SchemaStore</span>(), kg=<span class="cl">KGCache</span>()),
+    budget_split=(<span class="nm">0.60</span>, <span class="nm">0.25</span>, <span class="nm">0.15</span>),   <span class="cm"># L1 / L2 / L3</span>
+)
+
+ctx = <span class="kw">await</span> pipeline.<span class="fn">assemble</span>(
+    run_id=<span class="st">"run-abc123"</span>,
+    query=<span class="st">"top customers by revenue in 2024"</span>,
+    db_id=<span class="st">"northwind"</span>,
+    token_budget=<span class="nm">60_000</span>,
+)
+
+<span class="cm"># Inspect per-tier stats</span>
+<span class="fn">print</span>(ctx.stats.l1_tokens, ctx.stats.l1_hit)    <span class="cm"># 36000, True</span>
+<span class="fn">print</span>(ctx.stats.l2_tokens, ctx.stats.l2_hit)    <span class="cm"># 15000, True</span>
+<span class="fn">print</span>(ctx.stats.l3_tokens, ctx.stats.l3_hit)    <span class="cm"># 9000, True</span>
+<span class="fn">print</span>(ctx.stats.total_latency_ms)               <span class="cm"># e.g. 12.4</span></code><span class="code-lang">python</span></pre>
+
+  <h3>AssembledContext.stats fields</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>l1_tokens</code></td><td>int</td><td>Tokens consumed from L1 hot window</td></tr>
+      <tr><td><code>l2_tokens</code></td><td>int</td><td>Tokens consumed from L2 semantic retrieval</td></tr>
+      <tr><td><code>l3_tokens</code></td><td>int</td><td>Tokens consumed from L3 knowledge store</td></tr>
+      <tr><td><code>l1_hit</code></td><td>bool</td><td>L1 had messages for this run_id</td></tr>
+      <tr><td><code>l2_hit</code></td><td>bool</td><td>At least one result met the 0.70 threshold</td></tr>
+      <tr><td><code>l3_hit</code></td><td>bool</td><td>Schema or graph returned relevant data</td></tr>
+      <tr><td><code>total_latency_ms</code></td><td>float</td><td>Wall-clock time to assemble all tiers</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ══════════════════════ FEEDBACK CHANNEL ══════════════════════ -->
+<section class="section" id="feedback">
+  <h2>Real-time Feedback Channel</h2>
+  <p>The <code>FeedbackChannel</code> lets operators — or automated supervisors — inject guidance into a running agent without stopping it. Events are delivered via Redis Streams and consumed by the agent before every LLM call.</p>
+
+  <h3>FeedbackEvent types</h3>
+  <table>
+    <thead><tr><th>Type</th><th>When injected</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>correction</code></td><td>Always</td><td>Replaces or appends a corrective message to the next LLM call</td></tr>
+      <tr><td><code>hint</code></td><td>Always</td><td>Appends a hint to the system prompt for the next step</td></tr>
+      <tr><td><code>redirect</code></td><td>Always</td><td>Overrides the current goal/task</td></tr>
+      <tr><td><code>score</code></td><td>Only when score &lt; 0.40</td><td>Appended as quality feedback if score is below threshold</td></tr>
+      <tr><td><code>stop</code></td><td>Always</td><td>Halts the run immediately; sets final status to STOPPED</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Publishing feedback (operator / API client)</h3>
+<pre><code><span class="kw">from</span> haas.feedback <span class="kw">import</span> <span class="cl">FeedbackChannel</span>, <span class="cl">FeedbackEvent</span>
+
+channel = <span class="cl">FeedbackChannel</span>(redis_url=<span class="st">"redis://localhost:6379"</span>)
+
+<span class="cm"># Publish a correction mid-run</span>
+<span class="kw">await</span> channel.<span class="fn">publish</span>(
+    run_id=<span class="st">"run-abc123"</span>,
+    event=<span class="cl">FeedbackEvent</span>(
+        type=<span class="st">"correction"</span>,
+        content=<span class="st">"The date filter should use ORDER_DATE not SHIP_DATE"</span>,
+        author=<span class="st">"ops-team"</span>,
+    )
+)
+
+<span class="cm"># Non-blocking poll — returns immediately if no events</span>
+events = <span class="kw">await</span> channel.<span class="fn">poll</span>(run_id=<span class="st">"run-abc123"</span>, count=<span class="nm">10</span>)
+<span class="cm"># Uses XREAD with block=None (non-blocking), NOT block=0</span></code><span class="code-lang">python</span></pre>
+
+  <div class="callout warn">
+    <div class="callout-icon">&#9888;</div>
+    <p><strong>Important:</strong> <code>poll()</code> uses Redis <code>XREAD</code> with <code>block=None</code> (non-blocking). Never use <code>block=0</code> (infinite block) inside an agent step — it would deadlock the event loop.</p>
+  </div>
+
+  <h3>How the agent consumes feedback</h3>
+  <p>Every <code>BaseHaasAgent</code> subclass calls <code>_apply_feedback()</code> at the top of its step loop before any LLM call. The method checks the <code>should_inject</code> predicate per event type and mutates the message list accordingly.</p>
+
+<pre><code><span class="cm"># Inside BaseHaasAgent.run() — simplified</span>
+<span class="kw">async def</span> <span class="fn">_run_loop</span>(<span class="op">self</span>, state):
+    <span class="kw">while not</span> state.done:
+        <span class="cm"># 1. Pull feedback before every LLM call</span>
+        events = <span class="kw">await</span> <span class="op">self</span>.feedback_channel.<span class="fn">poll</span>(state.run_id)
+        state   = <span class="kw">await</span> <span class="op">self</span>.<span class="fn">_apply_feedback</span>(state, events)
+
+        <span class="kw">if</span> state.stop_requested:
+            <span class="kw">break</span>
+
+        <span class="cm"># 2. Assemble context + call LLM</span>
+        result = <span class="kw">await</span> <span class="op">self</span>.<span class="fn">task_step</span>(state)
+        state  = state.<span class="fn">advance</span>(result)
+
+<span class="kw">def</span> <span class="fn">should_inject</span>(event: <span class="cl">FeedbackEvent</span>) -&gt; <span class="nm">bool</span>:
+    <span class="kw">if</span> event.type <span class="kw">in</span> (<span class="st">"correction"</span>, <span class="st">"hint"</span>, <span class="st">"redirect"</span>, <span class="st">"stop"</span>):
+        <span class="kw">return True</span>
+    <span class="kw">if</span> event.type == <span class="st">"score"</span>:
+        <span class="kw">return</span> event.score <span class="op">&lt;</span> <span class="nm">0.40</span>   <span class="cm"># only inject low scores</span>
+    <span class="kw">return False</span></code><span class="code-lang">python</span></pre>
+
+  <h3>REST API endpoints</h3>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>POST</code></td><td><code>/runs/{id}/feedback</code></td><td>Publish a FeedbackEvent to the run's stream</td></tr>
+      <tr><td><code>GET</code></td><td><code>/runs/{id}/feedback</code></td><td>List all feedback events for a run</td></tr>
+    </tbody>
+  </table>
+
+<pre><code><span class="cm"># POST /runs/{id}/feedback</span>
+curl -X POST http://localhost:8000/runs/run-abc123/feedback \
+  -H <span class="st">"Content-Type: application/json"</span> \
+  -d <span class="st">'{"type":"correction","content":"Use ORDER_DATE not SHIP_DATE"}'</span>
+
+<span class="cm"># GET /runs/{id}/feedback</span>
+curl http://localhost:8000/runs/run-abc123/feedback</code><span class="code-lang">bash</span></pre>
+</section>
+
+<!-- ══════════════════════ RLVR ══════════════════════ -->
+<section class="section" id="rlvr">
+  <h2>RLVR — Reinforcement Learning from Verifiable Rewards</h2>
+  <p>RLVR provides <strong>online, per-step reward signals</strong> using deterministic, domain-specific verifiers. Unlike the Hermes self-improvement loop (offline, batch, binary pass/fail), RLVR operates in real time and produces graded scores that feed directly into advantage estimation and few-shot reinforcement.</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h3 style="margin-top:0;font-size:14px;color:var(--accent-5)">RLVR — Online</h3>
+      <ul>
+        <li>Per-step, real-time scoring</li>
+        <li>Graded rewards (0.0 – 1.0)</li>
+        <li>Advantage estimation with discount γ=0.95</li>
+        <li>Immediate few-shot reinforcement on high advantage</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;font-size:14px;color:var(--accent-4)">Hermes — Offline</h3>
+      <ul>
+        <li>Batch, post-run cycle</li>
+        <li>Binary pass/fail trigger</li>
+        <li>LLM-generated code patches</li>
+        <li>Eval + rollback before auto-apply</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Deterministic verifiers</h3>
+  <p>All verifiers run at <code>temperature=0</code>. Results are cached with SHA-256 on (agent_type, input, output) so re-verification of identical inputs is free. A rule-based fallback fires if the primary verifier raises an exception.</p>
+
+  <h3>SQLVerifier — 5-step pipeline</h3>
+  <div class="pipeline">
+    <div class="pipeline-step">
+      <div class="ps-num">Step 1</div>
+      <div class="ps-name">schema_check</div>
+      <div class="ps-desc">All referenced tables/columns exist</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">Step 2</div>
+      <div class="ps-name">syntax_check</div>
+      <div class="ps-desc">sqlparse valid SQL</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">Step 3</div>
+      <div class="ps-name">execution_check</div>
+      <div class="ps-desc">Dry-run EXPLAIN; no runtime error</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">Step 4</div>
+      <div class="ps-name">result_check</div>
+      <div class="ps-desc">Result set non-empty &amp; typed</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">Step 5</div>
+      <div class="ps-name">quality_check</div>
+      <div class="ps-desc">Semantic alignment with question</div>
+    </div>
+  </div>
+
+  <h3>CodeVerifier — 4-step pipeline</h3>
+  <div class="pipeline">
+    <div class="pipeline-step">
+      <div class="ps-num">Step 1</div>
+      <div class="ps-name">syntax_check</div>
+      <div class="ps-desc">AST parse; no SyntaxError</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">Step 2</div>
+      <div class="ps-name">execution_check</div>
+      <div class="ps-desc">Run in sandbox; no crash</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">Step 3</div>
+      <div class="ps-name">output_check</div>
+      <div class="ps-desc">stdout matches expected</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">Step 4</div>
+      <div class="ps-name">quality_check</div>
+      <div class="ps-desc">Complexity / style heuristics</div>
+    </div>
+  </div>
+
+  <h3>ReasoningVerifier — 3-step pipeline</h3>
+  <div class="pipeline">
+    <div class="pipeline-step">
+      <div class="ps-num">Step 1</div>
+      <div class="ps-name">format_check</div>
+      <div class="ps-desc">Output matches expected schema</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">Step 2</div>
+      <div class="ps-name">answer_check</div>
+      <div class="ps-desc">Final answer correct</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">Step 3</div>
+      <div class="ps-name">reasoning_check</div>
+      <div class="ps-desc">Chain-of-thought coherent</div>
+    </div>
+  </div>
+
+  <h3>Verifier factory</h3>
+<pre><code><span class="kw">from</span> haas.rlvr.verifiers <span class="kw">import</span> <span class="fn">get_verifier</span>
+
+verifier = <span class="fn">get_verifier</span>(<span class="st">"sql"</span>)       <span class="cm"># → SQLVerifier</span>
+verifier = <span class="fn">get_verifier</span>(<span class="st">"code"</span>)      <span class="cm"># → CodeVerifier</span>
+verifier = <span class="fn">get_verifier</span>(<span class="st">"reasoning"</span>) <span class="cm"># → ReasoningVerifier</span>
+
+result = <span class="kw">await</span> verifier.<span class="fn">verify</span>(
+    question=<span class="st">"Top 10 customers by revenue"</span>,
+    output=<span class="st">"SELECT customer_id, SUM(amount) ..."</span>,
+    db_path=<span class="st">"./northwind.db"</span>,
+)
+<span class="fn">print</span>(result.scores)    <span class="cm"># {"correctness": 0.9, "quality": 0.8, "safety": 1.0}</span>
+<span class="fn">print</span>(result.passed)    <span class="cm"># True — all thresholds met</span></code><span class="code-lang">python</span></pre>
+
+  <h3>AgentScores — 3-dimension scoring</h3>
+  <p>Every verification produces an <code>AgentScores</code> object. A run <strong>PASSES</strong> only when all three dimensions independently meet their thresholds.</p>
+
+  <table>
+    <thead><tr><th>Dimension</th><th>Pass threshold</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>correctness</code></td><td>≥ 0.50</td><td>Is the answer factually / functionally correct?</td></tr>
+      <tr><td><code>quality</code></td><td>≥ 0.60</td><td>Is the output well-formed and efficient?</td></tr>
+      <tr><td><code>safety</code></td><td>≥ 0.90</td><td>No harmful, injected, or policy-violating content</td></tr>
+    </tbody>
+  </table>
+
+  <h3>AdvantageEstimator</h3>
+<pre><code><span class="kw">from</span> haas.rlvr.advantage <span class="kw">import</span> <span class="cl">AdvantageEstimator</span>
+
+estimator = <span class="cl">AdvantageEstimator</span>(gamma=<span class="nm">0.95</span>)
+
+<span class="cm"># rewards: list of per-step scalar rewards for the episode</span>
+advantages = estimator.<span class="fn">compute</span>(rewards=[<span class="nm">0.3</span>, <span class="nm">0.7</span>, <span class="nm">0.9</span>])
+<span class="cm"># Returns: discounted returns - rolling baseline, normalised to mean=0 std=1</span>
+<span class="cm"># Rolling baseline computed over last 50 episodes (StepRewardBuffer)</span></code><span class="code-lang">python</span></pre>
+
+  <h3>StepRewardBuffer</h3>
+  <p>Redis-backed per-episode reward buffer. Maintains a rolling baseline over the last <strong>50 episodes</strong> used by the <code>AdvantageEstimator</code>. Keys are scoped per agent type to prevent cross-domain contamination.</p>
+
+  <h3>RLVRLoop — high / low advantage routing</h3>
+<pre><code><span class="kw">from</span> haas.rlvr.loop <span class="kw">import</span> <span class="cl">RLVRLoop</span>
+
+loop = <span class="cl">RLVRLoop</span>(
+    verifier=<span class="fn">get_verifier</span>(<span class="st">"sql"</span>),
+    advantage_threshold=<span class="nm">0.5</span>,   <span class="cm"># above → few-shot reinforce</span>
+)
+
+<span class="cm"># After a step completes:</span>
+<span class="kw">await</span> loop.<span class="fn">process_step</span>(
+    run_id=state.run_id,
+    step_output=result.output,
+    question=state.task,
+)
+<span class="cm"># High advantage  → few-shot examples prepended to next LLM prompt</span>
+<span class="cm"># Low advantage   → weighted Hermes patch queued for offline cycle</span></code><span class="code-lang">python</span></pre>
+</section>
+
+<!-- ══════════════════════ NEXUSSQL ══════════════════════ -->
+<section class="section" id="nexussql">
+  <h2>NexusSql Agent</h2>
+  <p><strong>NexusSql</strong> is HaaS's built-in self-correcting SQL agent optimised for large databases (100+ tables). It combines L3 SchemaStore routing, SQLVerifier feedback loops, and optional harness wrapping through <code>NexusSqlAgent</code>.</p>
+
+  <div class="grid-3" style="margin-top:16px">
+    <div class="stat-card">
+      <div class="num">71.4%</div>
+      <div class="label">BIRD pass rate</div>
+      <div class="sub">exec accuracy on BIRD dev set</div>
+    </div>
+    <div class="stat-card">
+      <div class="num">2</div>
+      <div class="label">Max self-corrections</div>
+      <div class="sub">per generation attempt</div>
+    </div>
+    <div class="stat-card">
+      <div class="num">12+</div>
+      <div class="label">Table routing threshold</div>
+      <div class="sub">keyword routing above this</div>
+    </div>
+  </div>
+
+  <h3>Schema-aware routing</h3>
+  <p>For queries that touch large databases, NexusSql uses the <strong>L3 SchemaStore</strong> to identify which tables are relevant before sending anything to the LLM. When there are more than <strong>12 candidate tables</strong>, keyword-based routing narrows the field so the LLM prompt contains only the relevant schema fragments — not the entire 100-table schema.</p>
+
+  <h3>Self-correction loop</h3>
+  <div class="pipeline">
+    <div class="pipeline-step">
+      <div class="ps-num">Step 1</div>
+      <div class="ps-name">generate</div>
+      <div class="ps-desc">LLM generates SQL from schema + question</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">Step 2</div>
+      <div class="ps-name">SQLVerifier</div>
+      <div class="ps-desc">5-step verification pipeline</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">Step 3</div>
+      <div class="ps-name">inject feedback</div>
+      <div class="ps-desc">Error details → FeedbackChannel</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">Step 4</div>
+      <div class="ps-name">retry</div>
+      <div class="ps-desc">Max 2 retries before FAIL</div>
+    </div>
+  </div>
+
+  <h3>Standalone usage (no harness)</h3>
+<pre><code><span class="kw">from</span> haas.agents.nexussql <span class="kw">import</span> <span class="cl">NexusSql</span>
+
+<span class="cm"># Simple one-shot SQL generation with self-correction</span>
+sql = <span class="kw">await</span> <span class="cl">NexusSql</span>.<span class="fn">generate_sql</span>(
+    question=<span class="st">"What are the top 5 products by units sold in Q1 2024?"</span>,
+    db_path=<span class="st">"./sales.db"</span>,
+)
+<span class="fn">print</span>(sql)
+<span class="cm"># SELECT product_name, SUM(quantity) AS units_sold</span>
+<span class="cm"># FROM order_items JOIN orders ON ...</span>
+<span class="cm"># WHERE order_date BETWEEN '2024-01-01' AND '2024-03-31'</span>
+<span class="cm"># GROUP BY product_name ORDER BY units_sold DESC LIMIT 5</span></code><span class="code-lang">python</span></pre>
+
+  <h3>Harness agent usage</h3>
+<pre><code><span class="kw">from</span> haas.agents.nexussql <span class="kw">import</span> <span class="cl">NexusSqlAgent</span>
+<span class="kw">from</span> haas <span class="kw">import</span> Harness, HaasConfig
+
+config  = <span class="cl">HaasConfig</span>.<span class="fn">from_env</span>()
+harness = <span class="cl">Harness</span>(config)
+
+<span class="cm"># from_config() picks up OPENAI_API_KEY / AZURE_* from .env automatically</span>
+agent = <span class="cl">NexusSqlAgent</span>.<span class="fn">from_config</span>(config, db_path=<span class="st">"./sales.db"</span>)
+
+trace = <span class="kw">await</span> harness.<span class="fn">run</span>(
+    agent,
+    task=<span class="st">"Monthly revenue trend for the last 12 months"</span>
+)
+<span class="fn">print</span>(trace.output)       <span class="cm"># generated + verified SQL</span>
+<span class="fn">print</span>(trace.step_count)   <span class="cm"># 1–3 depending on corrections</span>
+<span class="fn">print</span>(trace.rlvr_score)   <span class="cm"># AgentScores object</span></code><span class="code-lang">python</span></pre>
+
+  <h3>NexusSqlAgent — class hierarchy</h3>
+<pre><code><span class="cl">BaseHaasAgent</span>
+  └─ <span class="cl">SQLAgent</span>            <span class="cm"># base SQL agent (schema, execution)</span>
+       └─ <span class="cl">NexusSqlAgent</span>  <span class="cm"># + L3 routing, self-correction, RLVR</span></code><span class="code-lang">text</span></pre>
+
+  <h3>from_config() factory</h3>
+  <p><code>NexusSqlAgent.from_config(config, db_path)</code> wires up all dependencies from environment variables:</p>
+  <ul>
+    <li>LLM provider from <code>OPENAI_API_KEY</code> or <code>AZURE_OPENAI_*</code></li>
+    <li>SchemaStore auto-indexed from <code>db_path</code></li>
+    <li>FeedbackChannel from <code>REDIS_URL</code></li>
+    <li>SQLVerifier with SHA-256 cache enabled</li>
+    <li>RLVRLoop with <code>advantage_threshold=0.5</code></li>
+  </ul>
+</section>
+
+<!-- ══════════════════════ BENCHMARK ══════════════════════ -->
+<section class="section" id="bench">
+  <h2>General Benchmark (bench_agent.py)</h2>
+  <p>The <code>bench_agent.py</code> CLI evaluates any HaaS-compatible agent against standard datasets. It auto-selects the correct domain verifier from the agent type, estimates cost before running, and emits a structured <code>BenchReport</code>.</p>
+
+  <h3>Supported domains</h3>
+  <table>
+    <thead><tr><th>Domain flag</th><th>Agents</th><th>Datasets</th></tr></thead>
+    <tbody>
+      <tr><td><code>--domain sql</code></td><td>NexusSqlAgent, any SQLAgent subclass</td><td>BIRD, Spider</td></tr>
+      <tr><td><code>--domain code</code></td><td>AriaCode, any CodeAgent subclass</td><td>HumanEval</td></tr>
+      <tr><td><code>--domain base</code></td><td>Any BaseHaasAgent subclass</td><td>GSM8K, custom JSONL</td></tr>
+    </tbody>
+  </table>
+
+  <h3>CLI usage</h3>
+<pre><code><span class="cm"># SQL benchmark against BIRD dev set (cost estimate shown first)</span>
+python bench_agent.py \
+  --domain sql \
+  --dataset bird \
+  --agent NexusSqlAgent \
+  --db-path ./bird_dev_dbs/ \
+  --n 100 \
+  --estimate-cost
+
+<span class="cm"># GSM8K reasoning benchmark, 20 samples</span>
+python bench_agent.py \
+  --domain base \
+  --dataset gsm8k \
+  --n 20 \
+  --model gpt-4o
+
+<span class="cm"># Custom JSONL dataset</span>
+python bench_agent.py \
+  --domain base \
+  --dataset ./my_evals.jsonl \
+  --n 50</code><span class="code-lang">bash</span></pre>
+
+  <h3>BenchReport fields</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>pass_rate</code></td><td>float</td><td>Overall fraction of samples that passed all verifier steps</td></tr>
+      <tr><td><code>exec_accuracy</code></td><td>float</td><td>SQL-domain: fraction with correct execution output</td></tr>
+      <tr><td><code>avg_reward</code></td><td>float</td><td>Mean RLVR composite reward across all samples</td></tr>
+      <tr><td><code>by_hardness</code></td><td>dict</td><td>Pass rates broken down by BIRD hardness: simple / moderate / challenging</td></tr>
+      <tr><td><code>step_pass_rates</code></td><td>dict</td><td>Per-verifier-step pass rates (e.g. schema_check: 0.98)</td></tr>
+      <tr><td><code>failure_distribution</code></td><td>dict</td><td>Which verifier step caused each failure</td></tr>
+      <tr><td><code>cost_usd</code></td><td>float</td><td>Total API cost for the benchmark run</td></tr>
+      <tr><td><code>latency_p50_ms</code></td><td>float</td><td>Median end-to-end latency per sample</td></tr>
+    </tbody>
+  </table>
+
+<pre><code><span class="kw">from</span> haas.bench <span class="kw">import</span> <span class="fn">run_benchmark</span>
+
+report = <span class="kw">await</span> <span class="fn">run_benchmark</span>(
+    agent_class=<span class="cl">NexusSqlAgent</span>,
+    domain=<span class="st">"sql"</span>,
+    dataset=<span class="st">"bird"</span>,
+    n=<span class="nm">100</span>,
+    db_path=<span class="st">"./bird_dev_dbs/"</span>,
+)
+
+<span class="fn">print</span>(f<span class="st">"Pass rate: {report.pass_rate:.1%}"</span>)
+<span class="fn">print</span>(f<span class="st">"By hardness: {report.by_hardness}"</span>)
+<span class="fn">print</span>(f<span class="st">"Step failures: {report.failure_distribution}"</span>)</code><span class="code-lang">python</span></pre>
+</section>
+
+<!-- ══════════════════════ RESULTS ══════════════════════ -->
+<section class="section" id="results">
+  <h2>Benchmark Results</h2>
+  <p>All numbers below are from reproducible runs using the <code>bench_agent.py</code> framework. Source data and raw logs are in <code>benchmarks/</code>.</p>
+
+  <h3>Summary</h3>
+  <div class="grid-3" style="margin-top:16px">
+    <div class="stat-card">
+      <div class="num" style="color:var(--accent-2)">82.9%</div>
+      <div class="label">GraphRAG token reduction</div>
+      <div class="sub">2,208 → 378 tokens avg · 100% table coverage</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" style="color:var(--accent-2)">100%</div>
+      <div class="label">Semantic cache TPR</div>
+      <div class="sub">0% FPR · cosine ≥ 0.97 threshold</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" style="color:var(--accent-2)">71.4%</div>
+      <div class="label">BIRD pass rate</div>
+      <div class="sub">NexusSql + GPT-5.5 · exec accuracy 71.4%</div>
+    </div>
+  </div>
+  <div class="grid-3">
+    <div class="stat-card">
+      <div class="num" style="color:var(--accent-5)">0.01ms</div>
+      <div class="label">Circuit breaker time-to-open</div>
+      <div class="sub">0 false-positive trips · 3 scenarios</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" style="color:var(--accent-5)">872µs</div>
+      <div class="label">Span overhead p50</div>
+      <div class="sub">fakeredis · production adds ~200µs</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" style="color:var(--accent-4)">+70pp</div>
+      <div class="label">Hermes self-improvement</div>
+      <div class="sub">15% → 85% pass@1 · converges cycle 1</div>
+    </div>
+  </div>
+
+  <h3>Full results table</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Benchmark</th>
+        <th>Metric</th>
+        <th>Value</th>
+        <th>Config</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>GraphRAG token reduction</strong></td>
+        <td>Token count avg</td>
+        <td><span class="result-good">2,208 → 378 (−82.9%)</span></td>
+        <td>100% table coverage maintained</td>
+      </tr>
+      <tr>
+        <td><strong>Semantic LLM cache</strong></td>
+        <td>TPR / FPR</td>
+        <td><span class="result-good">100% TPR · 0% FPR</span></td>
+        <td>Cosine threshold = 0.97</td>
+      </tr>
+      <tr>
+        <td><strong>Circuit breaker</strong></td>
+        <td>Time to open</td>
+        <td><span class="result-num">0.01 ms</span></td>
+        <td>5-failure trigger · 3 scenarios · 0 false trips</td>
+      </tr>
+      <tr>
+        <td><strong>Span overhead</strong></td>
+        <td>p50 latency</td>
+        <td><span class="result-num">872 µs</span></td>
+        <td>fakeredis backend</td>
+      </tr>
+      <tr>
+        <td><strong>Hermes self-improvement</strong></td>
+        <td>pass@1</td>
+        <td><span class="result-good">15% → 85% (+70 pp)</span></td>
+        <td>Converges in cycle 1</td>
+      </tr>
+      <tr>
+        <td><strong>BIRD self-test</strong></td>
+        <td>pass rate / exec accuracy</td>
+        <td><span class="result-good">71.4% / 71.4%</span></td>
+        <td>NexusSqlAgent + GPT-5.5</td>
+      </tr>
+      <tr>
+        <td><strong>GSM8K reasoning</strong></td>
+        <td>pass rate / avg reward</td>
+        <td><span class="result-good">85% · 0.892</span></td>
+        <td>GPT-5.5 · n=20</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ══════════════════════ SAFETY & HITL ══════════════════════ -->
+<section class="section" id="safety">
+  <h2>Safety &amp; HITL</h2>
+  <p>HaaS enforces safety at three points in the execution lifecycle through a staged guardrail pipeline, and provides a human-in-the-loop approval gate for high-risk decisions.</p>
+
+  <h3>3-stage guardrail pipeline</h3>
+  <div class="pipeline">
+    <div class="pipeline-step">
+      <div class="ps-num">Stage 1</div>
+      <div class="ps-name">Input guard</div>
+      <div class="ps-desc">Applied before first LLM call; checks task for injections, policy violations</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">Stage 2</div>
+      <div class="ps-name">Step guard</div>
+      <div class="ps-desc">Applied before each step; enforces tool allow-lists, budget checks</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="ps-num">Stage 3</div>
+      <div class="ps-name">Output guard</div>
+      <div class="ps-desc">Applied to final answer; PII detection, safety scoring ≥ 0.90</div>
+    </div>
+  </div>
+
+<pre><code><span class="kw">from</span> haas.safety <span class="kw">import</span> <span class="cl">SafetyPipeline</span>, <span class="cl">GuardrailPolicy</span>
+
+policy = <span class="cl">GuardrailPolicy</span>(
+    tenant_id=<span class="st">"acme"</span>,
+    blocked_tools=[<span class="st">"DROP"</span>, <span class="st">"DELETE"</span>],
+    pii_redaction=<span class="nm">True</span>,
+    max_cost_usd=<span class="nm">2.00</span>,
+)
+
+pipeline = <span class="cl">SafetyPipeline</span>(policy=policy)
+harness  = <span class="cl">Harness</span>(config, safety=pipeline)</code><span class="code-lang">python</span></pre>
+
+  <h3>HITLManager</h3>
+  <p>When an agent reaches a checkpoint that requires human approval (e.g. destructive database mutations, exceeding cost budget), the run is paused and an approval request is created. The operator receives a Server-Sent Event push and approves or rejects via the REST API.</p>
+
+  <table>
+    <thead><tr><th>Method</th><th>Signature</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>request_approval</code></td><td><code>async (run_id, action, metadata) → request_id</code></td><td>Pause run, emit SSE push, return request ID</td></tr>
+      <tr><td><code>await_decision</code></td><td><code>async (request_id, timeout=300) → Decision</code></td><td>Poll Redis for operator response; non-blocking with configurable timeout</td></tr>
+      <tr><td><code>get_pending</code></td><td><code>(tenant_id) → List[ApprovalRequest]</code></td><td>List all open approvals for a tenant</td></tr>
+    </tbody>
+  </table>
+
+<pre><code><span class="kw">from</span> haas.safety.hitl <span class="kw">import</span> <span class="cl">HITLManager</span>
+
+hitl = <span class="cl">HITLManager</span>(redis_url=<span class="st">"redis://localhost:6379"</span>)
+
+<span class="cm"># Inside an agent step — pause for human review</span>
+request_id = <span class="kw">await</span> hitl.<span class="fn">request_approval</span>(
+    run_id=state.run_id,
+    action=<span class="st">"ALTER TABLE orders ADD COLUMN discount DECIMAL"</span>,
+    metadata={<span class="st">"reason"</span>: <span class="st">"schema migration required"</span>},
+)
+
+decision = <span class="kw">await</span> hitl.<span class="fn">await_decision</span>(request_id, timeout=<span class="nm">300</span>)
+
+<span class="kw">if</span> decision.approved:
+    <span class="kw">await</span> <span class="fn">execute_migration</span>()
+<span class="kw">else</span>:
+    <span class="kw">raise</span> <span class="cl">HITLRejected</span>(decision.reason)</code><span class="code-lang">python</span></pre>
+
+  <h3>Per-tenant policies</h3>
+  <p>Policies are stored in Redis keyed by <code>tenant_id</code> and loaded at the start of each run. They control: allowed tools, blocked SQL keywords, PII redaction rules, max cost per run, and HITL trigger conditions. Policies can be updated at runtime without restarting the server.</p>
+</section>
+
+<!-- ══════════════════════ OBSERVABILITY ══════════════════════ -->
+<section class="section" id="observability">
+  <h2>Observability</h2>
+
+  <h3>Span trace tree — 7 SpanKind types</h3>
+  <p>Every run produces a hierarchical span tree stored in Redis (live) and JSONL (durable). The root span is always <code>RUN</code>; all other spans are children.</p>
+
+  <div class="span-tree" style="margin: 16px 0 20px; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);">
+    <div class="span-row"><span class="span-kind run">RUN</span> <span style="color:var(--ink)">run-abc123</span> <span style="color:var(--muted);margin-left:auto">0ms → 4,200ms</span></div>
+    <div class="span-row" style="margin-left:22px"><span class="span-kind memory">MEMORY</span> <span style="color:var(--ink)">context_assemble</span> <span style="color:var(--muted);margin-left:auto">0ms → 12ms</span></div>
+    <div class="span-row" style="margin-left:22px"><span class="span-kind guardrail">GUARDRAIL</span> <span style="color:var(--ink)">input_check</span> <span style="color:var(--muted);margin-left:auto">12ms → 15ms</span></div>
+    <div class="span-row" style="margin-left:22px"><span class="span-kind llm">LLM</span> <span style="color:var(--ink)">step_1_generate</span> <span style="color:var(--muted);margin-left:auto">15ms → 1,800ms</span></div>
+    <div class="span-row" style="margin-left:44px"><span class="span-kind tool">TOOL</span> <span style="color:var(--ink)">schema_lookup</span> <span style="color:var(--muted);margin-left:auto">20ms → 32ms</span></div>
+    <div class="span-row" style="margin-left:22px"><span class="span-kind eval">EVAL</span> <span style="color:var(--ink)">sql_verifier</span> <span style="color:var(--muted);margin-left:auto">1,800ms → 1,950ms</span></div>
+    <div class="span-row" style="margin-left:22px"><span class="span-kind llm">LLM</span> <span style="color:var(--ink)">step_2_correct</span> <span style="color:var(--muted);margin-left:auto">1,950ms → 3,900ms</span></div>
+    <div class="span-row" style="margin-left:22px"><span class="span-kind guardrail">GUARDRAIL</span> <span style="color:var(--ink)">output_check</span> <span style="color:var(--muted);margin-left:auto">3,900ms → 3,960ms</span></div>
+  </div>
+
+  <table>
+    <thead><tr><th>SpanKind</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>RUN</code></td><td>Root span for the entire agent run</td></tr>
+      <tr><td><code>LLM</code></td><td>Single LLM call (model, tokens, latency, cost)</td></tr>
+      <tr><td><code>TOOL</code></td><td>Tool or function call (name, args, result, latency)</td></tr>
+      <tr><td><code>GUARDRAIL</code></td><td>Safety check pass/fail with policy name</td></tr>
+      <tr><td><code>MEMORY</code></td><td>Context assembly, tier hits, token counts</td></tr>
+      <tr><td><code>HANDOFF</code></td><td>Sub-agent delegation or framework adapter boundary</td></tr>
+      <tr><td><code>EVAL</code></td><td>Verifier run (step results, AgentScores)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Prometheus metrics (13 pre-defined)</h3>
+  <table>
+    <thead><tr><th>Metric name</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>haas_runs_total</code></td><td>Counter</td><td>Total runs started, labelled by agent_type + tenant</td></tr>
+      <tr><td><code>haas_run_duration_seconds</code></td><td>Histogram</td><td>End-to-end run wall time</td></tr>
+      <tr><td><code>haas_llm_calls_total</code></td><td>Counter</td><td>LLM calls by provider + model</td></tr>
+      <tr><td><code>haas_llm_tokens_total</code></td><td>Counter</td><td>Prompt + completion tokens by model</td></tr>
+      <tr><td><code>haas_llm_cost_usd_total</code></td><td>Counter</td><td>Cumulative API spend in USD</td></tr>
+      <tr><td><code>haas_cache_hits_total</code></td><td>Counter</td><td>LLM cache hits (exact + semantic) vs misses</td></tr>
+      <tr><td><code>haas_circuit_state</code></td><td>Gauge</td><td>Circuit breaker state per provider (0=CLOSED, 1=OPEN, 2=HALF_OPEN)</td></tr>
+      <tr><td><code>haas_span_overhead_seconds</code></td><td>Histogram</td><td>Trace span write latency</td></tr>
+      <tr><td><code>haas_rlvr_score</code></td><td>Histogram</td><td>Distribution of composite RLVR scores</td></tr>
+      <tr><td><code>haas_feedback_events_total</code></td><td>Counter</td><td>Feedback events published by type</td></tr>
+      <tr><td><code>haas_hitl_requests_total</code></td><td>Counter</td><td>HITL approval requests created</td></tr>
+      <tr><td><code>haas_hitl_decision_seconds</code></td><td>Histogram</td><td>Time from request to operator decision</td></tr>
+      <tr><td><code>haas_guardrail_blocks_total</code></td><td>Counter</td><td>Requests blocked by guardrail stage + policy</td></tr>
+    </tbody>
+  </table>
+
+  <h3>MLflow experiment tracking</h3>
+<pre><code><span class="kw">from</span> haas.observability.eval_log <span class="kw">import</span> <span class="fn">log_all</span>
+
+<span class="cm"># Log a BenchReport to all configured backends</span>
+<span class="fn">log_all</span>(
+    report,
+    mlflow=<span class="nm">True</span>,      <span class="cm"># logs metrics + artifacts to MLflow</span>
+    wandb=<span class="nm">False</span>,       <span class="cm"># optional W&amp;B integration</span>
+    langsmith=<span class="nm">False</span>,   <span class="cm"># optional LangSmith dataset logging</span>
+)</code><span class="code-lang">python</span></pre>
+
+  <h3>Audit log</h3>
+  <p>Every run produces an append-only audit entry in <code>audit.jsonl</code>. PII fields (email, phone, SSN patterns) are SHA-256 hashed before writing. The log captures: run_id, tenant_id, agent_type, task hash, tool calls, guardrail decisions, and final outcome.</p>
+
+<pre><code><span class="cm"># Example audit entry (PII hashed)</span>
+{
+  <span class="st">"run_id"</span>: <span class="st">"run-abc123"</span>,
+  <span class="st">"tenant_id"</span>: <span class="st">"acme"</span>,
+  <span class="st">"agent_type"</span>: <span class="st">"sql"</span>,
+  <span class="st">"task_hash"</span>: <span class="st">"sha256:a3f1..."</span>,
+  <span class="st">"tool_calls"</span>: [<span class="st">"schema_lookup"</span>, <span class="st">"sql_execute"</span>],
+  <span class="st">"guardrail_result"</span>: <span class="st">"PASS"</span>,
+  <span class="st">"outcome"</span>: <span class="st">"PASS"</span>,
+  <span class="st">"cost_usd"</span>: <span class="nm">0.0042</span>,
+  <span class="st">"ts"</span>: <span class="st">"2026-05-17T10:23:44Z"</span>
+}</code><span class="code-lang">json</span></pre>
+</section>
+
+<!-- ══════════════════════ REST API ══════════════════════ -->
+<section class="section" id="api-reference">
+  <h2>REST API Reference</h2>
+  <p>All endpoints require <code>Authorization: Bearer &lt;JWT&gt;</code> in production. The JWT must contain <code>tenant_id</code>. In development mode (<code>ENVIRONMENT=dev</code>) auth is bypassed.</p>
+
+  <h3>Runs</h3>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="tag">POST</span></td>
+        <td><code>/runs</code></td>
+        <td>Create and start a new agent run. Body: <code>{"agent_type":"sql","task":"...","config":{}}</code>. Returns <code>{"run_id":"..."}</code>.</td>
+      </tr>
+      <tr>
+        <td><span class="tag green">GET</span></td>
+        <td><code>/runs/{id}</code></td>
+        <td>Fetch run status, output, cost, step count, and RLVR scores.</td>
+      </tr>
+      <tr>
+        <td><span class="tag green">GET</span></td>
+        <td><code>/runs/{id}/stream</code></td>
+        <td>Server-Sent Events stream. Events: <code>step_start</code>, <code>step_end</code>, <code>llm_call</code>, <code>tool_call</code>, <code>feedback</code>, <code>run_end</code>.</td>
+      </tr>
+      <tr>
+        <td><span class="tag green">GET</span></td>
+        <td><code>/runs/{id}/trace</code></td>
+        <td>Full span tree as JSON. Includes all 7 SpanKind types with timing and metadata.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Feedback</h3>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="tag">POST</span></td>
+        <td><code>/runs/{id}/feedback</code></td>
+        <td>Publish a FeedbackEvent to the run's Redis Stream. Body: <code>{"type":"correction","content":"..."}</code>.</td>
+      </tr>
+      <tr>
+        <td><span class="tag green">GET</span></td>
+        <td><code>/runs/{id}/feedback</code></td>
+        <td>List all feedback events published to this run, with timestamps and author.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Evals</h3>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="tag green">GET</span></td>
+        <td><code>/evals</code></td>
+        <td>List all benchmark configurations registered in the system.</td>
+      </tr>
+      <tr>
+        <td><span class="tag">POST</span></td>
+        <td><code>/evals/{id}/run</code></td>
+        <td>Trigger a benchmark run asynchronously. Returns a <code>run_id</code> to track progress via <code>/runs/{id}/stream</code>.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Health</h3>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="tag green">GET</span></td>
+        <td><code>/health</code></td>
+        <td>Returns status of all subsystems: Redis, vector store, LLM router providers. HTTP 200 if all healthy; 503 if any critical service is down.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Request / response examples</h3>
+<pre><code><span class="cm"># POST /runs — start a NexusSql run</span>
+curl -X POST http://localhost:8000/runs \
+  -H <span class="st">"Authorization: Bearer $JWT"</span> \
+  -H <span class="st">"Content-Type: application/json"</span> \
+  -d <span class="st">'{"agent_type":"sql","task":"Top 10 customers by revenue 2024"}'</span>
+<span class="cm"># → {"run_id":"run-abc123","status":"running"}</span>
+
+<span class="cm"># GET /runs/{id}/stream — SSE stream</span>
+curl -N http://localhost:8000/runs/run-abc123/stream \
+  -H <span class="st">"Authorization: Bearer $JWT"</span>
+<span class="cm"># → data: {"event":"step_start","step":1}</span>
+<span class="cm"># → data: {"event":"llm_call","tokens":1240,"provider":"openai"}</span>
+<span class="cm"># → data: {"event":"run_end","output":"SELECT ...","cost_usd":0.004}</span>
+
+<span class="cm"># GET /runs/{id}/trace — full span tree</span>
+curl http://localhost:8000/runs/run-abc123/trace \
+  -H <span class="st">"Authorization: Bearer $JWT"</span>
+
+<span class="cm"># GET /health</span>
+curl http://localhost:8000/health
+<span class="cm"># → {"status":"ok","redis":"ok","vector_store":"ok","llm_router":"ok"}</span></code><span class="code-lang">bash</span></pre>
+
+  <div class="callout success">
+    <div class="callout-icon">&#10003;</div>
+    <p>The OpenAPI schema is served at <code>/docs</code> (Swagger UI) and <code>/redoc</code> (ReDoc) by the FastAPI server. JWT tokens can be obtained from <code>POST /auth/token</code> in non-dev environments.</p>
+  </div>
+</section>
+
+  </div><!-- .content -->
+</div><!-- #main -->
+
+<script>
+// Scrollspy
+const sections = document.querySelectorAll('.section[id]');
+const navItems = document.querySelectorAll('.nav-item');
+const currentLabel = document.getElementById('current-section');
+
+const sectionTitles = {};
+sections.forEach(s => {
+  const h = s.querySelector('h1,h2');
+  if (h) sectionTitles[s.id] = h.textContent.trim();
+});
+
+const obs = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      const id = e.target.id;
+      navItems.forEach(n => {
+        const active = n.getAttribute('href') === '#' + id;
+        n.classList.toggle('active', active);
+      });
+      if (sectionTitles[id] && currentLabel) {
+        currentLabel.textContent = sectionTitles[id].replace(/\s*\(HaaS\)\s*/i,'').replace(/\s*—.*$/,'').trim();
+      }
+    }
+  });
+}, { rootMargin: '-20% 0px -60% 0px' });
+
+sections.forEach(s => obs.observe(s));
+
+// Search filter
+const searchInput = document.getElementById('search-input');
+if (searchInput) {
+  searchInput.addEventListener('input', () => {
+    const q = searchInput.value.toLowerCase().trim();
+    navItems.forEach(item => {
+      const text = item.textContent.toLowerCase();
+      item.style.display = (!q || text.includes(q)) ? '' : 'none';
+    });
+  });
+}
+</script>
+</body>
+</html>

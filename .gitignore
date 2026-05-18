@@ -72,3 +72,12 @@ models/*.safetensors
 *.pdf
 *.pptx
 *.ppt
+
+# Paper draft — local only, not pushed
+/paper/
+
+# Benchmark cache (large SQLite DBs + intermediate results)
+benchmarks/cache/
+
+# Large dataset files
+benchmarks/results/gsm8k_test.jsonl
