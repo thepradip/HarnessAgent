@@ -14,6 +14,7 @@ import redis.asyncio as aioredis
 logger = logging.getLogger(__name__)
 
 _CACHE_NS = "harness:llm_cache"
+_SCAN_CAP = 200  # max entries for vector scan; oldest beyond this are skipped
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -79,15 +80,28 @@ class SemanticLLMCache:
         if not query_text:
             return None
 
+        # Fast path: exact SHA-256 match — no embedding needed
+        msg_hash = _messages_hash(messages, self._tenant_id)
+        exact_key = self._key(msg_hash)
+        try:
+            raw_exact = await self._redis.hgetall(exact_key)
+            if raw_exact:
+                response = raw_exact.get(b"response", b"").decode()
+                if response:
+                    logger.debug("Cache exact HIT tenant=%s", self._tenant_id)
+                    return response
+        except Exception as exc:
+            logger.debug("Cache exact lookup failed: %s", exc)
+
+        # Slow path: vector scan — cap at _SCAN_CAP most-recent entries
         try:
             query_embedding = (await self._embedder.embed([query_text]))[0]
         except Exception as exc:
             logger.warning("Cache get: embedding failed: %s", exc)
             return None
 
-        # Scan all cached entries for this tenant
         index_key = self._index_key()
-        members: list[bytes] = await self._redis.zrange(index_key, 0, -1)
+        members: list[bytes] = await self._redis.zrevrange(index_key, 0, _SCAN_CAP - 1)
         if not members:
             return None
 

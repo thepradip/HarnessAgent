@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 # How often (in steps) to save a checkpoint
 _CHECKPOINT_INTERVAL = 10
 
+# Truncate large tool outputs before they enter the LLM context window
+_TOOL_RESULT_MAX_CHARS = 8_000
+
 # Summarize history when it grows beyond this length
 _MAX_HISTORY_MESSAGES = 40
 # Keep this many recent messages verbatim after summarization
@@ -54,6 +57,19 @@ def _run_log_path(run_id: str) -> Path:
 def _history_path(workspace_path: Path, run_id: str) -> Path:
     """Return path for the full conversation history saved alongside checkpoint."""
     return workspace_path / "conversation.jsonl"
+
+
+def _cap_tool_result(result: ToolResult) -> ToolResult:
+    """Truncate oversized tool output before it enters the LLM context window."""
+    if isinstance(result.data, str) and len(result.data) > _TOOL_RESULT_MAX_CHARS:
+        overflow = len(result.data) - _TOOL_RESULT_MAX_CHARS
+        return ToolResult(
+            data=result.data[:_TOOL_RESULT_MAX_CHARS]
+            + f"\n...[{overflow} chars truncated]",
+            error=result.error,
+            metadata={**result.metadata, "truncated": True},
+        )
+    return result
 
 
 def _append_run_log(run_id: str, entry: dict) -> None:
@@ -125,6 +141,7 @@ class BaseAgent:
         self._online_monitor = online_monitor
         self._prompt_manager = prompt_manager
         self._trace_recorder = trace_recorder
+        self._feedback_last_id: dict[str, str] = {}  # run_id → last stream entry id
 
     # ------------------------------------------------------------------
     # Main run loop
@@ -175,7 +192,10 @@ class BaseAgent:
                 history: list[dict[str, Any]] = []
 
                 while ctx.is_budget_ok():
-                    # 3a. Fit history to context window
+                    # 3a. Check real-time feedback channel
+                    await self._apply_feedback(ctx, history)
+
+                    # 3b. Fit history to context window
                     history = await self._fit_history(ctx, history)
 
                     # 3b. Build retrieval context from memory
@@ -335,9 +355,12 @@ class BaseAgent:
                                 metadata={"guardrail_hit": True},
                             )
 
-                    tool_results: list[ToolResult] = list(
-                        await asyncio.gather(*[_execute_one(c) for c in response.tool_calls])
-                    )
+                    tool_results: list[ToolResult] = [
+                        _cap_tool_result(r)
+                        for r in await asyncio.gather(
+                            *[_execute_one(c) for c in response.tool_calls]
+                        )
+                    ]
 
                     # Process results sequentially (history order must be preserved)
                     for call, result in zip(response.tool_calls, tool_results, strict=True):
@@ -377,6 +400,9 @@ class BaseAgent:
 
                         # Audit log
                         await self._audit(ctx, call, result)
+
+                        # RLVR: record per-step reward (non-blocking, best-effort)
+                        await self._record_rlvr_reward(ctx, call, result)
 
                         tool_results_for_history.append(
                             {
@@ -622,6 +648,173 @@ class BaseAgent:
         if isinstance(e, TimeoutError):
             return FailureClass.BUDGET_TIME
         return FailureClass.UNKNOWN
+
+    # ------------------------------------------------------------------
+    # Real-time feedback
+    # ------------------------------------------------------------------
+
+    async def _apply_feedback(
+        self,
+        ctx: AgentContext,
+        history: list[dict[str, Any]],
+    ) -> None:
+        """
+        Poll the feedback channel and inject any pending events into history.
+
+        Called at the start of every loop iteration before the LLM call.
+        The feedback channel is optional — this is a no-op when not configured.
+        """
+        feedback_channel = ctx.metadata.get("feedback_channel")
+        if feedback_channel is None:
+            return
+
+        last_id = self._feedback_last_id.get(ctx.run_id, "0")
+
+        try:
+            events, new_last_id = await feedback_channel.poll(ctx.run_id, last_id)
+        except Exception as exc:
+            logger.debug("feedback poll failed for run %s: %s", ctx.run_id, exc)
+            return
+
+        if not events:
+            return
+
+        self._feedback_last_id[ctx.run_id] = new_last_id
+        applied_ids: list[str] = []
+
+        for event in events:
+            logger.info(
+                "Feedback received run=%s type=%s source=%s priority=%d",
+                ctx.run_id[:8], event.type, event.source, event.priority,
+            )
+
+            # stop — raise clean termination
+            if event.type == "stop":
+                await feedback_channel.mark_applied(ctx.run_id, [event.feedback_id])
+                await self._emit_event(_feedback_step_event(ctx, event))
+                from harness.core.errors import HarnessError
+                raise HarnessError(
+                    f"Agent stopped by feedback: {event.content or '(no reason)'}",
+                    failure_class=FailureClass.UNKNOWN,
+                )
+
+            # redirect — update remaining task in context metadata
+            if event.type == "redirect" and event.content:
+                ctx.metadata["redirected_task"] = event.content
+                history.append({
+                    "role": "system",
+                    "content": event.to_context_message(),
+                })
+                applied_ids.append(event.feedback_id)
+                await self._emit_event(_feedback_step_event(ctx, event))
+                continue
+
+            # correction / hint / score-with-low-score → inject into history
+            from harness.feedback.channel import should_inject
+            if should_inject(event):
+                history.append({
+                    "role": "system",
+                    "content": event.to_context_message(),
+                })
+                applied_ids.append(event.feedback_id)
+                await self._emit_event(_feedback_step_event(ctx, event))
+
+            # score → record metric regardless
+            if event.type == "score" and event.score is not None:
+                try:
+                    from harness.observability.metrics import get_prometheus_metrics
+                    m = get_prometheus_metrics()
+                    if m and hasattr(m, "feedback_scores"):
+                        m.feedback_scores.labels(
+                            agent_type=self.agent_type,
+                            run_id=ctx.run_id,
+                        ).observe(event.score)
+                except Exception:
+                    pass
+                applied_ids.append(event.feedback_id)
+
+        if applied_ids:
+            try:
+                await feedback_channel.mark_applied(ctx.run_id, applied_ids)
+            except Exception as exc:
+                logger.debug("mark_applied failed: %s", exc)
+
+    async def _record_rlvr_reward(
+        self,
+        ctx: AgentContext,
+        call: ToolCall,
+        result: ToolResult,
+    ) -> None:
+        """
+        Compute and record a per-step reward for RLVR.
+        Uses the verifier and reward buffer from ctx.metadata when configured.
+        Non-blocking — failures are silently logged.
+        """
+        reward_buffer = ctx.metadata.get("rlvr_reward_buffer")
+        verifier = ctx.metadata.get("rlvr_verifier")
+        rlvr_loop = ctx.metadata.get("rlvr_loop")
+        if reward_buffer is None:
+            return
+
+        try:
+            from harness.improvement.rlvr.buffer import StepReward
+            action = call.args.get("sql") or call.args.get("code") or str(call.args)
+            result_text = result.to_text() if not result.is_error else ""
+            gold = ctx.metadata.get("gold_action") or ctx.metadata.get("gold_sql")
+
+            reward = 0.5  # default neutral
+            verdict = "partial"
+            source = "default"
+            reasoning = ""
+            vr = None
+
+            if verifier is not None and action:
+                try:
+                    vr = await verifier.verify(
+                        task=ctx.task,
+                        action=action,
+                        result=result_text,
+                        gold=gold,
+                    )
+                    reward = vr.overall_reward
+                    verdict = vr.verdict
+                    source = vr.source
+                    reasoning = vr.feedback_for_agent
+                    # Publish step feedback back to agent
+                    if rlvr_loop is not None:
+                        await rlvr_loop.publish_step_feedback(ctx.run_id, vr)
+                except Exception as exc:
+                    logger.debug("RLVR verifier failed: %s", exc)
+            elif result.is_error:
+                reward, verdict, source = 0.0, "incorrect", "error_signal"
+                reasoning = result.error or ""
+            else:
+                reward, verdict, source = 0.8, "correct", "success_signal"
+
+            # Prompt hash (stable key for this prompt version)
+            import hashlib
+            prompt_hash = hashlib.sha256(
+                ctx.metadata.get("prompt_version", "unknown").encode()
+            ).hexdigest()[:16]
+
+            sr = StepReward(
+                run_id=ctx.run_id,
+                step=ctx.step_count,
+                agent_type=self.agent_type,
+                task=ctx.task,
+                action=action[:500],
+                result_preview=result_text[:500],
+                reward=reward,
+                verdict=verdict,
+                confidence=vr._confidence() if vr else 0.5,
+                source=source,
+                prompt_hash=prompt_hash,
+                reasoning=reasoning[:300],
+            )
+            await reward_buffer.record(sr)
+
+        except Exception as exc:
+            logger.debug("_record_rlvr_reward failed silently: %s", exc)
 
     # ------------------------------------------------------------------
     # HITL
@@ -1084,3 +1277,21 @@ def _get_metrics() -> Any:
 
 def _utcnow():
     return datetime.now(UTC)
+
+
+def _feedback_step_event(ctx: AgentContext, event: Any) -> StepEvent:
+    """Wrap a FeedbackEvent as a StepEvent for the event bus."""
+    return StepEvent(
+        run_id=ctx.run_id,
+        step=ctx.step_count,
+        event_type="feedback_applied",
+        payload={
+            "feedback_id": event.feedback_id,
+            "type": event.type,
+            "source": event.source,
+            "priority": event.priority,
+            "content_preview": (event.content or "")[:200],
+            "score": event.score,
+        },
+        timestamp=_utcnow(),
+    )

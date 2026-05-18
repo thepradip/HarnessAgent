@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -21,6 +23,14 @@ _RETRYABLE = frozenset({
     FailureClass.LLM_TIMEOUT,
     FailureClass.LLM_ERROR,
 })
+
+# Errors worth retrying on the same provider (with backoff) before falling back
+_BACKOFF_RETRYABLE = frozenset({
+    FailureClass.LLM_RATE_LIMIT,
+    FailureClass.LLM_TIMEOUT,
+})
+
+_BACKOFF_DELAYS = (1.0, 2.0, 4.0)  # seconds; each multiplied by ±20% jitter
 
 
 @dataclass
@@ -53,11 +63,14 @@ class LLMRouter:
         config: LLMRouterConfig | None = None,
         registry: CircuitBreakerRegistry | None = None,
         cache: Any | None = None,
+        health_ttl: float = 5.0,
     ) -> None:
         self._config = config or LLMRouterConfig()
         self._registry = registry or CircuitBreakerRegistry()
         self._breakers: dict[str, CircuitBreaker] = {}
         self._cache = cache  # SemanticLLMCache | None
+        self._health_cache: dict[str, tuple[bool, float]] = {}
+        self._health_ttl = health_ttl
 
     def register(
         self,
@@ -85,6 +98,47 @@ class LLMRouter:
 
     def _sorted_providers(self) -> list[ProviderEntry]:
         return [e for e in sorted(self._config.providers, key=lambda e: e.priority) if e.enabled]
+
+    async def _is_healthy(self, provider: LLMProvider) -> bool:
+        """Return cached health status; re-check after _health_ttl seconds."""
+        key = f"{provider.provider_name}:{provider.model}"
+        cached = self._health_cache.get(key)
+        if cached is not None and time.monotonic() < cached[1]:
+            return cached[0]
+        try:
+            result = await provider.health_check()
+        except Exception:
+            result = False
+        self._health_cache[key] = (result, time.monotonic() + self._health_ttl)
+        return result
+
+    async def _try_with_backoff(
+        self,
+        provider: LLMProvider,
+        breaker: CircuitBreaker,
+        messages: list[dict[str, Any]],
+        **kw: Any,
+    ) -> LLMResponse:
+        """Attempt provider.complete() up to 4 times (initial + 3 retries) with
+        exponential backoff for rate-limit and timeout errors."""
+        last: Exception | None = None
+        for attempt, delay in enumerate([0.0, *_BACKOFF_DELAYS]):
+            if delay:
+                await asyncio.sleep(delay * random.uniform(0.8, 1.2))
+            try:
+                async with breaker.call():
+                    return await provider.complete(messages, **kw)
+            except CircuitOpenError:
+                raise  # circuit opened mid-retry; let router move to next provider
+            except LLMError as exc:
+                if exc.failure_class not in _BACKOFF_RETRYABLE:
+                    raise
+                last = exc
+                logger.debug(
+                    "backoff attempt %d/3 for %s:%s — %s",
+                    attempt + 1, provider.provider_name, provider.model, exc.failure_class,
+                )
+        raise last  # type: ignore[misc]
 
     async def complete(
         self,
@@ -146,37 +200,32 @@ class LLMRouter:
                 )
                 continue
 
-            # Skip providers that fail a health check
-            try:
-                healthy = await provider.health_check()
-                if not healthy:
-                    logger.debug("Skipping %s:%s — health check failed",
-                                 provider.provider_name, provider.model)
-                    continue
-            except Exception as exc:
-                logger.debug("Health check error for %s:%s: %s",
-                             provider.provider_name, provider.model, exc)
+            # Skip providers that fail a health check (result is TTL-cached)
+            if not await self._is_healthy(provider):
+                logger.debug("Skipping %s:%s — health check failed",
+                             provider.provider_name, provider.model)
                 continue
 
             breaker = self._get_breaker(provider)
 
             try:
-                async with breaker.call():
-                    response = await provider.complete(
-                        messages,
-                        max_tokens=max_tokens,
-                        system=system,
-                        tools=tools,
-                        **kwargs,
-                    )
-                    # ── Store in cache (only text responses, not tool calls) ─
-                    if (self._cache is not None and not skip_cache
-                            and not tools and response.content):
-                        try:
-                            await self._cache.set(messages, response.content)
-                        except Exception as exc:
-                            logger.debug("Cache store failed: %s", exc)
-                    return response
+                response = await self._try_with_backoff(
+                    provider,
+                    breaker,
+                    messages,
+                    max_tokens=max_tokens,
+                    system=system,
+                    tools=tools,
+                    **kwargs,
+                )
+                # ── Store in cache (only text responses, not tool calls) ─
+                if (self._cache is not None and not skip_cache
+                        and not tools and response.content):
+                    try:
+                        await self._cache.set(messages, response.content)
+                    except Exception as exc:
+                        logger.debug("Cache store failed: %s", exc)
+                return response
             except CircuitOpenError as exc:
                 logger.warning("Circuit open for %s:%s, trying next",
                                provider.provider_name, provider.model)
@@ -185,7 +234,7 @@ class LLMRouter:
             except LLMError as exc:
                 if exc.failure_class in _RETRYABLE:
                     logger.warning(
-                        "Retryable error from %s:%s (%s), trying next",
+                        "All retries exhausted for %s:%s (%s), trying next provider",
                         provider.provider_name, provider.model, exc.failure_class,
                     )
                     last_exc = exc
@@ -205,11 +254,7 @@ class LLMRouter:
         """Stream tokens from the first available provider."""
         for entry in self._sorted_providers():
             provider = entry.provider
-            try:
-                healthy = await provider.health_check()
-                if not healthy:
-                    continue
-            except Exception:
+            if not await self._is_healthy(provider):
                 continue
 
             breaker = self._get_breaker(provider)
