@@ -18,6 +18,10 @@ class EvalCase:
         agent_type:      Which agent to run this case against.
         task:            The user task string to submit.
         expected_output: Ground-truth substring or None if success-only check.
+        gold_actions:    Multiple valid actions/queries (SQL, code, tool calls).
+        sandbox_type:    Which EvalSandbox backend to use for execution scoring.
+        db_path:         Path to eval database or fixture file.
+        hardness:        Pre-labelled difficulty (easy/medium/hard/extra-hard).
         metadata:        Arbitrary extra data (e.g. difficulty, dataset source).
         tags:            List of classification tags for filtering.
     """
@@ -26,8 +30,22 @@ class EvalCase:
     agent_type: str
     task: str
     expected_output: str | None = None
+    gold_actions: list[str] = field(default_factory=list)
+    sandbox_type: str = "none"   # "sql" | "code" | "tool" | "http" | "none"
+    db_path: str | None = None
+    hardness: str | None = None
     metadata: dict = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
+
+    def all_gold_actions(self) -> list[str]:
+        """Deduped union of expected_output + gold_actions, preserving order."""
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in ([self.expected_output] if self.expected_output else []) + self.gold_actions:
+            if item and item not in seen:
+                seen.add(item)
+                result.append(item)
+        return result
 
     def to_dict(self) -> dict:
         """Serialise to a plain dict suitable for JSONL storage."""
@@ -36,6 +54,10 @@ class EvalCase:
             "agent_type": self.agent_type,
             "task": self.task,
             "expected_output": self.expected_output,
+            "gold_actions": self.gold_actions,
+            "sandbox_type": self.sandbox_type,
+            "db_path": self.db_path,
+            "hardness": self.hardness,
             "metadata": self.metadata,
             "tags": self.tags,
         }
@@ -48,6 +70,10 @@ class EvalCase:
             agent_type=data["agent_type"],
             task=data["task"],
             expected_output=data.get("expected_output"),
+            gold_actions=data.get("gold_actions", []),
+            sandbox_type=data.get("sandbox_type", "none"),
+            db_path=data.get("db_path"),
+            hardness=data.get("hardness"),
             metadata=data.get("metadata", {}),
             tags=data.get("tags", []),
         )

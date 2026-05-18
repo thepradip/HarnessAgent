@@ -10,6 +10,155 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Execution-based scorers (require an EvalSandbox)
+# ---------------------------------------------------------------------------
+
+
+async def score_execution_match(
+    action: str,
+    gold_action: str,
+    sandbox: Any,
+    **exec_kwargs: Any,
+) -> ScoreResult:
+    """Run action and gold_action in sandbox; compare outputs. 1.0 if equal, 0.0 otherwise."""
+    try:
+        pred_res = await sandbox.execute(action, **exec_kwargs)
+        gold_res = await sandbox.execute(gold_action, **exec_kwargs)
+    except Exception as exc:
+        return ScoreResult(score=0.0, method="execution_match",
+                           details=f"sandbox error: {exc}")
+
+    if pred_res.error:
+        return ScoreResult(score=0.0, method="execution_match",
+                           details=f"pred error: {pred_res.error}")
+    if gold_res.error:
+        return ScoreResult(score=0.5, method="execution_match",
+                           details="gold action failed — cannot compare")
+
+    pred_out = pred_res.output
+    gold_out = gold_res.output
+
+    # Tabular comparison: normalise rows to sets of tuples
+    if isinstance(pred_out, dict) and "rows" in pred_out and isinstance(gold_out, dict) and "rows" in gold_out:
+        pred_rows = {tuple(r) for r in pred_out.get("rows", [])}
+        gold_rows = {tuple(r) for r in gold_out.get("rows", [])}
+        if pred_rows == gold_rows:
+            return ScoreResult(score=1.0, method="execution_match", details="result sets equal")
+        if not gold_rows:
+            return ScoreResult(score=0.0, method="execution_match", details="gold result is empty")
+        overlap = len(pred_rows & gold_rows) / len(gold_rows)
+        return ScoreResult(score=round(overlap, 4), method="execution_match",
+                           details=f"partial overlap {len(pred_rows & gold_rows)}/{len(gold_rows)}")
+
+    # Generic equality
+    match = str(pred_out).strip() == str(gold_out).strip()
+    return ScoreResult(score=1.0 if match else 0.0, method="execution_match",
+                       details="exact match" if match else "outputs differ")
+
+
+async def score_execution_best_of(
+    action: str,
+    gold_actions: list[str],
+    sandbox: Any,
+    **exec_kwargs: Any,
+) -> ScoreResult:
+    """Evaluate action against all gold actions; return the best score."""
+    if not gold_actions:
+        return ScoreResult(score=0.0, method="execution_best_of", details="no gold actions")
+    best = ScoreResult(score=0.0, method="execution_best_of", details="no match")
+    for gold in gold_actions:
+        result = await score_execution_match(action, gold, sandbox, **exec_kwargs)
+        if result.score > best.score:
+            best = ScoreResult(score=result.score, method="execution_best_of",
+                               details=result.details)
+        if best.score == 1.0:
+            break
+    return best
+
+
+def score_output_match(
+    pred_output: Any,
+    gold_output: Any,
+    match_type: str = "exact",
+    tolerance: float = 0.01,
+) -> ScoreResult:
+    """Compare structured outputs: exact / subset / numeric_close."""
+    if match_type == "exact":
+        match = str(pred_output).strip() == str(gold_output).strip()
+        return ScoreResult(score=1.0 if match else 0.0, method="output_match_exact")
+
+    if match_type == "subset":
+        if isinstance(gold_output, dict) and isinstance(pred_output, dict):
+            match = all(pred_output.get(k) == v for k, v in gold_output.items())
+            return ScoreResult(score=1.0 if match else 0.0, method="output_match_subset")
+        if isinstance(gold_output, list) and isinstance(pred_output, list):
+            gold_set = set(map(str, gold_output))
+            pred_set = set(map(str, pred_output))
+            score = len(gold_set & pred_set) / len(gold_set) if gold_set else 1.0
+            return ScoreResult(score=score, method="output_match_subset")
+        return score_output_match(pred_output, gold_output, "exact")
+
+    if match_type == "numeric_close":
+        try:
+            p, g = float(pred_output), float(gold_output)
+            denom = max(abs(g), 1.0)
+            rel_err = abs(p - g) / denom
+            return ScoreResult(
+                score=1.0 if rel_err <= tolerance else 0.0,
+                method="output_match_numeric",
+                details=f"rel_err={rel_err:.4f}",
+            )
+        except (TypeError, ValueError):
+            return ScoreResult(score=0.0, method="output_match_numeric",
+                               details="non-numeric values")
+
+    return ScoreResult(score=0.0, method="output_match", details=f"unknown match_type={match_type}")
+
+
+def score_row_count_match(pred_result: Any, gold_result: Any) -> ScoreResult:
+    """Ratio score: min/max row count between predicted and gold results."""
+    pred_n = _extract_row_count(pred_result)
+    gold_n = _extract_row_count(gold_result)
+    if gold_n == 0 and pred_n == 0:
+        return ScoreResult(score=1.0, method="row_count_match", details="both empty")
+    if gold_n == 0 or pred_n == 0:
+        return ScoreResult(score=0.0, method="row_count_match",
+                           details=f"pred={pred_n} gold={gold_n}")
+    score = min(pred_n, gold_n) / max(pred_n, gold_n)
+    return ScoreResult(score=round(score, 4), method="row_count_match",
+                       details=f"pred={pred_n} gold={gold_n}")
+
+
+def score_schema_match(pred_result: Any, gold_result: Any) -> ScoreResult:
+    """Fraction of gold column/key names present in predicted result."""
+    pred_cols = _extract_columns(pred_result)
+    gold_cols = _extract_columns(gold_result)
+    if not gold_cols:
+        return ScoreResult(score=1.0, method="schema_match", details="gold has no columns")
+    overlap = len({c.lower() for c in pred_cols} & {c.lower() for c in gold_cols})
+    score = overlap / len(gold_cols)
+    return ScoreResult(score=round(score, 4), method="schema_match",
+                       details=f"{overlap}/{len(gold_cols)} columns matched")
+
+
+def _extract_row_count(result: Any) -> int:
+    if hasattr(result, "output") and isinstance(result.output, dict):
+        return int(result.output.get("row_count", len(result.output.get("rows", []))))
+    if isinstance(result, dict):
+        return int(result.get("row_count", len(result.get("rows", []))))
+    if isinstance(result, list):
+        return len(result)
+    return 0
+
+
+def _extract_columns(result: Any) -> list[str]:
+    if hasattr(result, "output") and isinstance(result.output, dict):
+        return result.output.get("columns", [])
+    if isinstance(result, dict):
+        return result.get("columns", list(result.keys()))
+    return []
+
 
 @dataclass
 class ScoreResult:
@@ -234,6 +383,7 @@ async def score_llm_judge(
     expected: str | None,
     llm_provider: Any,
     rubric: str | None = None,
+    cache: Any | None = None,
 ) -> ScoreResult:
     """Use an LLM to evaluate agent output quality on a 0-1 scale.
 
@@ -262,6 +412,19 @@ async def score_llm_judge(
         rubric=effective_rubric,
     )
 
+    # Check judge cache (explicit arg takes priority, then global cache)
+    _cache = cache
+    if _cache is None:
+        try:
+            from harness.eval.judge_cache import get_global_cache
+            _cache = get_global_cache()
+        except Exception:
+            pass
+    if _cache is not None:
+        cached = _cache.get(prompt)
+        if cached is not None:
+            return cached
+
     try:
         response = await llm_provider.complete(
             messages=[{"role": "user", "content": prompt}],
@@ -281,11 +444,10 @@ async def score_llm_judge(
         reasoning = parsed.get("reasoning", "")
         score = max(0.0, min(1.0, score))
 
-        return ScoreResult(
-            score=score,
-            method="llm_judge",
-            details=reasoning,
-        )
+        result = ScoreResult(score=score, method="llm_judge", details=reasoning)
+        if _cache is not None:
+            _cache.set(prompt, result)
+        return result
 
     except json.JSONDecodeError as exc:
         logger.warning("LLM judge response was not valid JSON: %s", exc)
