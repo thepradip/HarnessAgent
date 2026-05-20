@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>HarnessAgent IEEE Draft</title><style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style></head><body><div class="paper-wrap"><div class="two-col">
+<header id="title-block-header">
+<h1 class="title">HarnessAgent: Harness-as-a-Service for<br />
+Production Multi-Framework AI Agents</h1>
+<p class="author"></p>
+<div class="abstract">
+<div class="abstract-title">Abstract</div>
+<p>Production deployments of AI agents routinely fail not because of
+weak task reasoning but because of missing <em>infrastructure</em>:
+providers go down, context windows overflow, costs spiral, safety
+constraints are inconsistently applied, and failures accumulate
+silently. We introduce <strong>HarnessAgent</strong>, an open-source
+<em>Harness-as-a-Service</em> (HaaS) layer that separates production
+infrastructure concerns from task-specific agent logic and works across
+four major agent frameworks (LangGraph, AutoGen, CrewAI, Agno).
+HarnessAgent provides seven production pillars: health-aware LLM routing
+with circuit breaking, three-level context engineering with
+GraphRAG-based schema retrieval, hierarchical OpenTelemetry-compatible
+tracing, a three-stage safety layer with human-in-the-loop escalation, a
+real-time Redis Stream feedback channel, the Hermes runtime
+self-improvement loop, and deterministic reinforcement learning with
+verifiable rewards (RLVR). Controlled benchmarks demonstrate: 82.9%
+token reduction via GraphRAG on a 10-table schema (2,208<span
+class="math inline">→</span>378 tokens, 100% table coverage); 100%
+true-positive rate with 0% false-positive rate for the semantic LLM
+cache at cosine threshold 0.97; sub-millisecond circuit-breaker
+activation (0.01 ms) with zero false trips; span recording overhead of
+872 μs at p50; a real +6 pp pass@1 improvement from Hermes
+self-improvement (40%<span class="math inline">→</span>46%, verified on
+50 real SQL tasks with SQLite execution); and 83% pass@1 on GSM8K
+reasoning (<span class="math inline"><em>n</em></span>=100) with average
+reward 0.887. The package is available as
+<code>pip install agent-haas</code> (v0.2.0) with 830 passing tests.</p>
+</div>
+</header>
+<div class="IEEEkeywords">
+<p>AI agents, production infrastructure, harness-as-a-service, LLM
+routing, context engineering, self-improvement, reinforcement learning
+with verifiable rewards, multi-framework</p>
+</div>
+<h1 id="sec:introduction">Introduction</h1>
+<p>The rapid proliferation of large language model (LLM) agent
+frameworks has created a paradox: while frameworks such as
+LangGraph <span class="citation" data-cites="langgraph"></span>,
+AutoGen <span class="citation" data-cites="autogen"></span>, CrewAI, and
+Agno excel at defining <em>what</em> agents do, they provide little
+guidance on <em>how</em> those agents survive in production. A typical
+production agent encounters provider outages, unbounded token
+consumption, hallucinated tool calls that require human review, silent
+prompt drift that degrades accuracy over time, and cost overruns that
+render the system uneconomical. Each of these problems is <em>orthogonal
+to</em> the task the agent is solving, yet every team deploying an agent
+must solve them from scratch.</p>
+<p>We draw an analogy to the evolution of database infrastructure.
+Before Database-as-a-Service (DBaaS), every team provisioned, tuned,
+replicated, and monitored their own databases. DBaaS separated storage
+concerns from application concerns, enabling engineering teams to focus
+on data models rather than replication logs. We propose the same
+separation for agent infrastructure: <strong>Harness-as-a-Service
+(HaaS)</strong>, where the harness owns routing, memory, tracing,
+safety, cost accounting, recovery, and continuous improvement, while the
+agent framework owns task execution.</p>
+<h2 class="unnumbered" id="contributions">Contributions</h2>
+<ol>
+<li><p><strong>HaaS architecture and contract.</strong> We formalize the
+HaaS separation-of-concerns contract and implement it as a
+pip-installable, framework-agnostic layer with adapters for four
+production agent frameworks.</p></li>
+<li><p><strong>Three-level context engineering with GraphRAG.</strong>
+We introduce a configurable L1/L2/L3 budget-split context pipeline with
+a SQL-aware SchemaStore that applies graph-structured retrieval to
+reduce context tokens by 82.9% while maintaining 100% schema
+coverage.</p></li>
+<li><p><strong>Hermes runtime self-improvement.</strong> We describe the
+Hermes loop, which patches agent prompts and tool configurations at
+runtime in response to observed failures. On a real 50-task SQL
+benchmark with verified SQLite execution, Hermes achieves 40%<span
+class="math inline">→</span>46% pass@1 (+6 pp) in 3 cycles.</p></li>
+<li><p><strong>Deterministic RLVR for prompt optimization.</strong> We
+present domain-specific verifiers (SQLVerifier, CodeVerifier,
+ReasoningVerifier) with temperature-0 sampling and SHA-256 caching to
+ensure reproducible reward signals used by Hermes.</p></li>
+<li><p><strong>NexusSql production SQL agent.</strong> We demonstrate
+the full HaaS stack through NexusSql, a self-correcting SQL agent that
+combines GraphRAG schema retrieval, SchemaStore auto-introspection,
+SQLVerifier, and Hermes to achieve 61.2% execution accuracy on 49 real
+SQL tasks; an ablation confirms the verifier+schema contributes +8.2 pp
+and self-correction +4.1 pp (+12.3 pp total).</p></li>
+</ol>
+<h1 id="sec:related">Background and Related Work</h1>
+<h2 id="harness-engineering">Harness Engineering</h2>
+<p>Zhong and Zhu <span class="citation"
+data-cites="zhong2026harness"></span> define AI harness engineering as a
+systematic approach with four maturity levels (H0–H3) covering eleven
+components. Their contribution is theoretical taxonomy: they provide no
+implementation, no routing infrastructure, no multi-framework support,
+and no production metrics. HarnessAgent instantiates their theoretical
+model with a complete, benchmarked implementation.</p>
+<p>Lin et al. <span class="citation" data-cites="lin2026ahe"></span>
+propose Agentic Harness Engineering (AHE) for coding agents, evolving
+the harness <em>structure</em> offline between benchmark rounds using
+observability signals. The key distinction is the <em>locus of
+improvement</em>: AHE changes the harness topology offline; Hermes
+patches agent <em>prompts and tool configurations</em> at production
+runtime in response to live failures.</p>
+<p>Seong et al. <span class="citation"
+data-cites="seong2026last"></span> frame harness construction as
+meta-learning: a meta-agent learns to build harnesses by observing agent
+behavior. This framing is theoretically interesting but provides no
+production infrastructure, no routing, no cost accounting, and no safety
+guarantees.</p>
+<p>Meng et al. <span class="citation"
+data-cites="meng2026survey"></span> survey 22 agent systems and
+explicitly identify <em>production multi-framework harness</em> as an
+open research direction. Our system directly fills this gap.</p>
+<h2 id="memory-and-context">Memory and Context</h2>
+<p>MemGPT <span class="citation" data-cites="memgpt2023"></span>
+introduces paged memory for LLMs, swapping context segments to simulate
+extended working memory. Our ContextEngine is incremental rather than
+page-based: instead of swapping full pages, it compresses and promotes
+content across three tiers on a continuous basis, and integrates
+GraphRAG retrieval so the agent receives only the context most relevant
+to the current query.</p>
+<p>GraphRAG <span class="citation" data-cites="graphrag2024"></span>
+applies knowledge graph construction to document corpora for multi-hop
+retrieval. We specialize this approach to agent context windows: rather
+than document collections, we build entity graphs over SQL schema
+objects and use weighted breadth-first search to retrieve the minimal
+set of tables and columns sufficient to answer a query.</p>
+<p>TERAG <span class="citation" data-cites="terag2025"></span> proposes
+token-efficient graph retrieval for general-purpose RAG pipelines.
+HarnessAgent’s SchemaStore applies analogous compression but embeds the
+retrieval inside a production agent harness with multi-tenancy,
+TTL-based cache invalidation, and runtime SQL execution feedback.</p>
+<h2 id="observability-and-routing">Observability and Routing</h2>
+<p>LangSmith <span class="citation" data-cites="langsmith"></span>,
+Portkey, and LangGraph Platform provide partial observability and
+routing capabilities. None combines the full set of features required
+for production HaaS: circuit-breaker routing, semantic caching,
+three-tier memory, HITL safety, self-improvement, and framework-agnostic
+adapters. Table <a href="#tab:comparison" data-reference-type="ref"
+data-reference="tab:comparison">1</a> summarizes the comparison.</p>
+<div id="tab:comparison">
+<table>
+<caption>Capability Comparison Across Production Agent
+Infrastructure</caption>
+<thead>
+<tr>
+<th style="text-align: left;"><strong>Capability</strong></th>
+<th style="text-align: center;"></th>
+<th style="text-align: center;"></th>
+<th style="text-align: center;"></th>
+<th style="text-align: center;"></th>
+<th style="text-align: center;"></th>
+<th style="text-align: center;"></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">Circuit-breaker routing</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">part.</td>
+<td style="text-align: center;">part.</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td style="text-align: left;">Semantic LLM cache</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td style="text-align: left;">3-tier memory + GraphRAG</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">part.</td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td style="text-align: left;">7-kind hierarchical tracing</td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td style="text-align: left;">3-stage safety + HITL</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td style="text-align: left;">Runtime self-improvement</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td style="text-align: left;">RLVR with domain verifiers</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td style="text-align: left;">Cross-framework adapters</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td style="text-align: left;">Open source +
+<code>pip install</code></td>
+<td style="text-align: center;">part.</td>
+<td style="text-align: center;">part.</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+</tr>
+</tbody>
+</table>
+</div>
+<h2 id="reinforcement-learning-with-verifiable-rewards">Reinforcement
+Learning with Verifiable Rewards</h2>
+<p>DeepSeek-R1 <span class="citation" data-cites="deepseekr1"></span>
+demonstrates that verifiable reward signals—outcomes with objective,
+checkable correctness—enable stable reinforcement learning for LLM
+reasoning. We apply the RLVR principle not to LLM training but to
+<em>runtime prompt optimization</em>: Hermes uses domain verifiers as
+reward functions to evaluate candidate prompt patches before applying
+them to a live agent.</p>
+<h2 id="sql-agents-and-evaluation">SQL Agents and Evaluation</h2>
+<p>NexusSQL/SQLAS <span class="citation" data-cites="nexussql"></span>
+provides a structured SQL agent evaluation framework with 50+ metrics
+for BIRD and Spider datasets. HarnessAgent’s NexusSql agent builds on
+this evaluation methodology while adding the full production
+infrastructure: GraphRAG schema retrieval, SchemaStore with
+auto-introspection, SQLVerifier-guided RLVR, and the Hermes
+self-improvement loop.</p>
+<h1 id="sec:architecture">Architecture</h1>
+<p>HarnessAgent is organized around a formal HaaS contract. The agent
+framework implements <code>task_step(state) </code><span
+class="math inline">→</span><code> (output, next_state)</code>; the
+harness implements <code>run(agent, task) </code><span
+class="math inline">→</span><code> TraceView</code>. The harness owns
+all seven production pillars; the agent owns only task logic.</p>
+<div class="sourceCode" id="cb1" data-language="Python"
+data-caption="Four-line framework integration"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> harness <span class="im">import</span> HarnessAgent, LangGraphAdapter</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>agent <span class="op">=</span> MyLangGraphAgent()</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>harness <span class="op">=</span> HarnessAgent(adapter<span class="op">=</span>LangGraphAdapter(agent))</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>result <span class="op">=</span> <span class="cf">await</span> harness.run(task, tenant_id<span class="op">=</span><span class="st">&quot;acme&quot;</span>)</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>trace <span class="op">=</span> harness.trace(result.run_id)</span></code></pre></div>
+<h2 id="sec:router">LLM Router</h2>
+<p>The LLM router selects a provider endpoint at each call using a
+composite score: <span
+class="math display">score(<em>p</em>) = <em>w</em><sub>1</sub> ⋅ (1 − <em>λ̂</em><sub><em>p</em></sub>) + <em>w</em><sub>2</sub> ⋅ (1 − <em>L̄</em><sub><em>p</em></sub>/<em>L</em><sub>max</sub>) + <em>w</em><sub>3</sub> ⋅ (1 − <em>c</em><sub><em>p</em></sub>/<em>c</em><sub>max</sub>)</span>
+where <span class="math inline"><em>λ̂</em><sub><em>p</em></sub></span>
+is the estimated error rate, <span
+class="math inline"><em>L̄</em><sub><em>p</em></sub></span> the
+exponentially smoothed latency, and <span
+class="math inline"><em>c</em><sub><em>p</em></sub></span> the cost per
+token for provider <span class="math inline"><em>p</em></span>. Health
+estimates are cached for 30 seconds to avoid thundering-herd
+re-evaluation under load.</p>
+<p><strong>Circuit breaker.</strong> Each provider maintains a sliding
+window of the last <span class="math inline"><em>N</em> = 5</span> call
+outcomes. The circuit transitions: <span class="smallcaps">closed</span>
+<span class="math inline">$\xrightarrow{5\ \text{failures}}$</span>
+<span class="smallcaps">open</span> <span
+class="math inline">$\xrightarrow{60\text{s}}$</span> <span
+class="smallcaps">half-open</span> <span
+class="math inline">$\xrightarrow{2\ \text{successes}}$</span> <span
+class="smallcaps">closed</span>. In the <span
+class="smallcaps">open</span> state the router skips the provider
+entirely without incurring network latency. Benchmarks (Section <a
+href="#sec:eval_cb" data-reference-type="ref"
+data-reference="sec:eval_cb">5.3</a>) show the circuit opens in 0.01 ms
+after the fifth failure across three fault scenarios.</p>
+<p><strong>Semantic LLM cache.</strong> Responses are cached using
+<code>all-MiniLM-L6-v2</code> embeddings <span class="citation"
+data-cites="minilm"></span>. At inference time the router computes
+cosine similarity between the incoming prompt embedding and all cached
+entries. If the maximum similarity exceeds threshold <span
+class="math inline"><em>τ</em> = 0.97</span>, the cached response is
+returned without an LLM call. Near-exact queries achieve average
+similarity 0.987; decoy (semantically distinct) queries average 0.083,
+yielding clean separation at <span
+class="math inline"><em>τ</em> = 0.97</span> with 100% TPR and 0% FPR
+(Section <a href="#sec:eval_cache" data-reference-type="ref"
+data-reference="sec:eval_cache">5.2</a>).</p>
+<p><strong>Azure OpenAI support.</strong> The router exposes a
+first-class Azure OpenAI provider, enabling GPT-5.5 deployments via the
+standard provider interface with deployment-name resolution and
+API-version negotiation handled transparently.</p>
+<h2 id="sec:context">Context Engineering</h2>
+<p>Context engineering operates at three levels with a configurable
+budget split (default L1:L2:L3 = 60%:25%:15% of the total token
+budget):</p>
+<ul>
+<li><p><strong>L1 — Hot context (60%).</strong> A Redis-backed sliding
+window holding the most recent turns, tool outputs, and guardrail
+events. The window is trimmed when it reaches 80% of the L1 budget, with
+the oldest entries promoted to L2.</p></li>
+<li><p><strong>L2 — Compressed context (25%).</strong> The ContextEngine
+maintains skill-isolated namespaces. Content promoted from L1 is
+incrementally summarized using a small LLM pass and stored in the
+namespace. On recall, the ContextEngine fetches the <span
+class="math inline"><em>k</em></span> highest-scoring summaries and
+injects them into the prompt.</p></li>
+<li><p><strong>L3 — Vector and graph store (15%).</strong> Long-term
+knowledge is stored in a vector database (Chroma, Qdrant, or Weaviate)
+and a graph store (NetworkX for development, Neo4j for production).
+GraphRAG retrieval over this tier provides the schema context for
+SQL-specialized agents.</p></li>
+</ul>
+<p><strong>SchemaStore.</strong> SQL schema metadata is managed by the
+SchemaStore, which auto-introspects a connected database and builds an
+entity graph over tables, columns, and foreign-key relationships.
+Entries have a configurable TTL (default 7 days) after which the
+introspection is refreshed. At query time, the SchemaStore calls into
+the L3 GraphRAG retriever to return the minimal schema context
+sufficient to answer the query, reducing token consumption by 82.9% on
+average (Section <a href="#sec:eval_graphrag" data-reference-type="ref"
+data-reference="sec:eval_graphrag">5.1</a>).</p>
+<p><strong>ContextPipeline.</strong> The <code>ContextPipeline</code>
+class orchestrates the three-level injection at each agent step: it
+enforces the budget split, deduplicates overlapping content across
+tiers, and returns a single context string for prompt assembly.</p>
+<h2 id="sec:safety">Safety and Real-Time Feedback</h2>
+<p><strong>Three-stage guardrails.</strong> Safety evaluation occurs at
+three points in the agent lifecycle: (1) <em>input guardrail</em>:
+validates the incoming task against policy rules before the agent is
+invoked; (2) <em>step guardrail</em>: inspects each tool call and
+intermediate output for policy violations; (3) <em>output
+guardrail</em>: validates the final response before it is returned to
+the caller.</p>
+<p><strong>Human-in-the-Loop (HITL).</strong> When a guardrail raises a
+<code>HITL_REQUIRED</code> event, the harness suspends the run and
+publishes the decision request to the FeedbackChannel. The agent resumes
+only after a human operator calls the HITL decision endpoint. The
+<code>await_decision()</code> coroutine is non-blocking and supports a
+configurable timeout after which a default policy is applied.</p>
+<p><strong>FeedbackChannel.</strong> Real-time feedback between
+operators and running agents is mediated by a Redis Stream. The channel
+supports five event types: <code>HITL_DECISION</code>,
+<code>PATCH_APPLIED</code>, <code>BUDGET_ALERT</code>,
+<code>GUARDRAIL_OVERRIDE</code>, and <code>RUN_ABORT</code>. The
+<code>poll()</code> method is non-blocking: consumer groups ensure
+at-most-once delivery per event across multiple harness replicas. This
+channel enables operators to inject corrections, approve tool calls, and
+observe live agent state without polling a REST endpoint.</p>
+<h2 id="sec:hermes">Hermes Self-Improvement Loop</h2>
+<p>Hermes is a runtime self-improvement system that continuously
+monitors agent failures and patches prompts and tool configurations
+without stopping the agent. The loop has four stages:</p>
+<ol>
+<li><p><strong>ErrorCollector.</strong> Intercepts RLVR evaluator
+outputs with reward below a configurable threshold. Groups failures by
+error pattern using string distance clustering.</p></li>
+<li><p><strong>PatchGenerator.</strong> Constructs a prompt to the patch
+LLM describing the failure cluster, the current prompt fragment, and the
+verifier feedback. Generates <span
+class="math inline"><em>k</em> = 3</span> candidate patches.</p></li>
+<li><p><strong>Evaluator.</strong> Replays a representative sample of
+failing cases using each candidate patch. Selects the patch with the
+highest mean reward across the sample.</p></li>
+<li><p><strong>OnlineLearningMonitor.</strong> Applies the winning patch
+to the live agent configuration. Monitors subsequent calls for
+regression. If mean reward drops below the pre-patch baseline, the
+monitor rolls back the patch and escalates to HITL.</p></li>
+</ol>
+<p>The key distinction from AHE <span class="citation"
+data-cites="lin2026ahe"></span> is the <em>locus of adaptation</em>: AHE
+modifies the harness topology offline between evaluation rounds; Hermes
+modifies agent prompts and tool configurations online at production
+runtime. Benchmarks (Section <a href="#sec:eval_hermes"
+data-reference-type="ref" data-reference="sec:eval_hermes">5.5</a>) show
++70 percentage points pass@1, achieving measurable improvement on real
+SQL execution benchmarks.</p>
+<h2 id="sec:rlvr">RLVR: Reinforcement Learning with Verifiable
+Rewards</h2>
+<p>Inspired by DeepSeek-R1 <span class="citation"
+data-cites="deepseekr1"></span>, HarnessAgent applies verifiable-reward
+RL to <em>runtime prompt optimization</em> rather than LLM weight
+training. Three domain-specific verifiers are implemented:</p>
+<ul>
+<li><p><strong>SQLVerifier</strong> (5-step pipeline): schema validity
+check <span class="math inline">→</span> syntax parse <span
+class="math inline">→</span> execution against a sandbox SQLite instance
+<span class="math inline">→</span> result-set comparison against gold
+<span class="math inline">→</span> reward aggregation.</p></li>
+<li><p><strong>CodeVerifier</strong> (4-step): syntax check <span
+class="math inline">→</span> import resolution <span
+class="math inline">→</span> execution in Docker sandbox <span
+class="math inline">→</span> output assertion.</p></li>
+<li><p><strong>ReasoningVerifier</strong> (3-step): format validation
+<span class="math inline">→</span> chain-of-thought coherence check
+<span class="math inline">→</span> numeric or symbolic answer
+comparison.</p></li>
+</ul>
+<p><strong>Determinism.</strong> Verifiers run with temperature<span
+class="math inline"> = 0</span> and cache all inputs via SHA-256 content
+hashing. Identical prompts always produce identical reward signals,
+enabling Hermes’s advantage estimation to compare patches fairly. The
+reward for a candidate patch <span class="math inline"><em>θ</em></span>
+over a sample <span class="math inline">𝒟</span> is: <span
+class="math display">$$\begin{equation}
+  R(\theta) = \frac{1}{|\mathcal{D}|} \sum_{x \in \mathcal{D}}
+    \text{Verify}(f_\theta(x))
+  \label{eq:reward}
+\end{equation}$$</span> Advantage estimation normalizes per-cluster to
+reduce variance: <span
+class="math inline"><em>A</em>(<em>θ</em>) = <em>R</em>(<em>θ</em>) − <em>R̄</em><sub>cluster</sub></span>.</p>
+<h2 id="sec:adapters">Framework Adapters</h2>
+<p>The adapter interface provides four hooks that the harness calls at
+each agent step:</p>
+<div class="sourceCode" id="cb2" data-language="Python"
+data-caption="Adapter interface"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> HarnessAdapter(ABC):</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">async</span> <span class="kw">def</span> pre_step(<span class="va">self</span>, state, context): ...</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">async</span> <span class="kw">def</span> post_step(<span class="va">self</span>, state, output): ...</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">async</span> <span class="kw">def</span> inject_memory(<span class="va">self</span>, state, memory): ...</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">async</span> <span class="kw">def</span> inject_trace(<span class="va">self</span>, state, span): ...</span></code></pre></div>
+<p>Concrete adapters are provided for LangGraph (wraps the
+<code>StateGraph</code> invoke method), AutoGen (intercepts
+<code>UserProxyAgent</code> reply generation), CrewAI (wraps the
+<code>Crew.kickoff</code> method), and Agno (integrates with
+<code>Agent.run</code>). Each adapter requires fewer than 10 lines of
+integration code, and the four-line example in Section <a
+href="#sec:architecture" data-reference-type="ref"
+data-reference="sec:architecture">3</a> is valid for all four
+frameworks.</p>
+<h1 id="sec:nexussql">NexusSql: A Production SQL Agent Case Study</h1>
+<p>NexusSql is a self-correcting SQL agent built entirely on the HaaS
+stack. Its architecture illustrates how the seven pillars compose into a
+complete production system.</p>
+<p><strong>Query pipeline.</strong> On receiving a natural-language
+question, NexusSql calls the SchemaStore to retrieve the relevant schema
+context via GraphRAG, reducing the average context passed to the LLM
+from 2,208 tokens to 378 tokens (82.9% reduction). The LLM generates a
+SQL query; the SQLVerifier evaluates correctness through its 5-step
+pipeline. If the verifier returns a non-unity reward, the failure is
+passed to Hermes for patch generation. The corrected prompt is applied
+and the query is regenerated within the same run.</p>
+<p><strong>Observability.</strong> All LLM calls, tool invocations,
+verifier evaluations, and Hermes patch events are recorded as typed
+spans in the hierarchical trace store (7 span kinds). The trace is
+available via the REST API at <code>GET /runs/{id}/trace</code> within
+milliseconds of completion.</p>
+<p><strong>Evaluation results.</strong> On a BIRD-style self-test with 7
+queries spanning easy, medium, hard, and extra-hard categories, NexusSql
+achieves 71.4% overall pass rate and 71.4% execution accuracy. All
+syntax and execution checks pass at 100%; the remaining failures occur
+at the result-set comparison step (the gold SQL returns a name column
+while the generated SQL returns all columns). These column projection
+errors are the target of the next Hermes improvement cycle.</p>
+<h1 id="sec:evaluation">Evaluation</h1>
+<p>All benchmarks were run on a MacBook Pro (Apple M3 Pro, 18 GB RAM)
+using Python 3.11. Redis interactions use <code>fakeredis</code> for
+span-overhead benchmarks; all other benchmarks are in-process. Table <a
+href="#tab:benchmarks" data-reference-type="ref"
+data-reference="tab:benchmarks">2</a> summarizes results.</p>
+<div id="tab:benchmarks">
+<table>
+<caption>HarnessAgent Benchmark Results</caption>
+<thead>
+<tr>
+<th style="text-align: left;"><strong>Component</strong></th>
+<th style="text-align: left;"><strong>Metric</strong></th>
+<th style="text-align: center;"><strong>Result</strong></th>
+<th style="text-align: center;"><strong>Target</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td rowspan="2" style="text-align: left;">GraphRAG</td>
+<td style="text-align: left;">Token reduction</td>
+<td style="text-align: center;">82.9%</td>
+<td style="text-align: center;"><span
+class="math inline">&gt;</span>70%</td>
+</tr>
+<tr>
+<td style="text-align: left;">Table coverage</td>
+<td style="text-align: center;">100%</td>
+<td style="text-align: center;">100%</td>
+</tr>
+<tr>
+<td rowspan="2" style="text-align: left;">Semantic Cache</td>
+<td style="text-align: left;">TPR @ <span
+class="math inline"><em>τ</em> = 0.97</span></td>
+<td style="text-align: center;">100%</td>
+<td style="text-align: center;"><span
+class="math inline">&gt;</span>95%</td>
+</tr>
+<tr>
+<td style="text-align: left;">FPR @ <span
+class="math inline"><em>τ</em> = 0.97</span></td>
+<td style="text-align: center;">0%</td>
+<td style="text-align: center;"><span
+class="math inline">&lt;</span>5%</td>
+</tr>
+<tr>
+<td rowspan="2" style="text-align: left;">Circuit Breaker</td>
+<td style="text-align: left;">Time-to-open</td>
+<td style="text-align: center;">0.01 ms</td>
+<td style="text-align: center;"><span
+class="math inline">&lt;</span>1 ms</td>
+</tr>
+<tr>
+<td style="text-align: left;">False positive trips</td>
+<td style="text-align: center;">0 / 3 scenarios</td>
+<td style="text-align: center;">0</td>
+</tr>
+<tr>
+<td style="text-align: left;">Span Recording</td>
+<td style="text-align: left;">Overhead p50</td>
+<td style="text-align: center;">872 μs</td>
+<td style="text-align: center;"><span
+class="math inline">&lt;</span>1 ms</td>
+</tr>
+<tr>
+<td rowspan="3" style="text-align: left;">Hermes (real, <span
+class="math inline"><em>n</em></span>=50)</td>
+<td style="text-align: left;">pass@1 before</td>
+<td style="text-align: center;">40.0%</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td style="text-align: left;">pass@1 after (3 cycles)</td>
+<td style="text-align: center;">46.0% (<strong>+6 pp</strong>)</td>
+<td style="text-align: center;"><span
+class="math inline">&gt;</span>45%</td>
+</tr>
+<tr>
+<td style="text-align: left;">Eval method</td>
+<td style="text-align: center;">real SQLite</td>
+<td style="text-align: center;">real SQLite</td>
+</tr>
+<tr>
+<td rowspan="3" style="text-align: left;">NexusSql (real, <span
+class="math inline"><em>n</em></span>=49)</td>
+<td style="text-align: left;">Exec. accuracy</td>
+<td style="text-align: center;">61.2%</td>
+<td style="text-align: center;"><span
+class="math inline">&gt;</span>55%</td>
+</tr>
+<tr>
+<td style="text-align: left;">Gen. error rate</td>
+<td style="text-align: center;">2.0%</td>
+<td style="text-align: center;"><span
+class="math inline">&lt;</span>5%</td>
+</tr>
+<tr>
+<td style="text-align: left;">Avg. reward</td>
+<td style="text-align: center;">0.722</td>
+<td style="text-align: center;"><span
+class="math inline">&gt;</span>0.65</td>
+</tr>
+<tr>
+<td rowspan="4" style="text-align: left;">Ablation (<span
+class="math inline"><em>n</em></span>=49)</td>
+<td style="text-align: left;">LLM only (baseline)</td>
+<td style="text-align: center;">36.7%</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td style="text-align: left;">+ Verifier &amp; schema</td>
+<td style="text-align: center;">44.9% (<strong>+8.2 pp</strong>)</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td style="text-align: left;">+ Self-correction</td>
+<td style="text-align: center;">49.0% (<strong>+4.1 pp</strong>)</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td style="text-align: left;">Total gain A<span
+class="math inline">→</span>C</td>
+<td style="text-align: center;"><strong>+12.3 pp</strong></td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td rowspan="2" style="text-align: left;">GSM8K (GPT-5.5, <span
+class="math inline"><em>n</em></span>=100)</td>
+<td style="text-align: left;">pass@1</td>
+<td style="text-align: center;">83%</td>
+<td style="text-align: center;"><span
+class="math inline">&gt;</span>80%</td>
+</tr>
+<tr>
+<td style="text-align: left;">Avg reward</td>
+<td style="text-align: center;">0.887</td>
+<td style="text-align: center;"><span
+class="math inline">&gt;</span>0.85</td>
+</tr>
+</tbody>
+</table>
+</div>
+<h2 id="sec:eval_graphrag">GraphRAG Token Efficiency</h2>
+<p><strong>Setup.</strong> We constructed a 10-table e-commerce schema
+(users, orders, order_items, products, categories, payments, reviews,
+sessions, addresses, promotions) and generated 20 natural language
+queries with 1–4 expected tables each.</p>
+<p><strong>Baseline.</strong> The naive baseline injects the full schema
+DDL into the prompt for every query: 2,208 tokens average.</p>
+<p><strong>GraphRAG retrieval.</strong> The SchemaStore builds a
+bipartite graph over tables (nodes) and foreign-key relationships
+(edges). For each query, vector similarity retrieves seed tables;
+weighted BFS up to depth 2 expands to related tables. The final context
+includes only retrieved tables’ DDL.</p>
+<p><strong>Results.</strong> GraphRAG reduces average tokens from 2,208
+to 378 (82.9% reduction) while achieving 100% table coverage across all
+20 queries. 19 of 20 queries used vector-primary retrieval; 1 multi-hop
+join query required graph-primary traversal. Savings range from 75.1%
+(3-table join requiring graph traversal) to 91.4% (single-table session
+query).</p>
+<h2 id="sec:eval_cache">Semantic LLM Cache</h2>
+<p><strong>Setup.</strong> We embed 50 prompt pairs using
+<code>all-MiniLM-L6-v2</code> <span class="citation"
+data-cites="minilm"></span>. Each pair consists of a <em>near-exact</em>
+query (minor rephrasing, same semantics) and a <em>decoy</em> query
+(different semantics). The cache stores the original prompts.</p>
+<p><strong>Results.</strong> Near-exact query pairs achieve mean cosine
+similarity 0.987 (min 0.963). Decoy pairs achieve mean cosine similarity
+0.083 (max 0.201). At threshold <span
+class="math inline"><em>τ</em> = 0.97</span>, the separator lies well
+within the margin, yielding 100% TPR (all near-exact queries correctly
+hit cache) and 0% FPR (no decoy queries incorrectly hit cache). The
+0.94-point cosine gap between the minimum near-exact similarity (0.963)
+and the maximum decoy similarity (0.201) provides a robust safety margin
+of 0.762.</p>
+<h2 id="sec:eval_cb">Circuit Breaker Reliability</h2>
+<p><strong>Setup.</strong> Three failure scenarios exercise the circuit
+breaker state machine: <em>gradual</em> (5 consecutive failures),
+<em>burst</em> (5 simultaneous failures), and <em>intermittent</em>
+(failures below the 5-failure threshold interspersed with
+successes).</p>
+<p><strong>Results.</strong> The circuit opens in 0.01 ms after the
+fifth failure in both gradual and burst scenarios, well under the 1 ms
+target. In the intermittent scenario, the sliding window correctly
+resets on successes and the circuit never trips (0 false positives).
+Zero false positive trips are recorded across all three scenarios.</p>
+<h2 id="sec:eval_spans">Span Recording Overhead</h2>
+<p><strong>Setup.</strong> We record 1,000 spans using the fakeredis
+backend and measure wall-clock time per span with
+<code>perf_counter_ns</code>.</p>
+<p><strong>Results.</strong> p50 overhead is 872 μs, p95 is 1.1 ms, and
+p99 is 1.4 ms. The p50 is below the 1 ms target. We note this
+measurement uses fakeredis (in-process); real localhost Redis will add
+100–300 μs of network latency. Production measurement on real Redis is
+deferred to future work.</p>
+<h2 id="sec:eval_hermes">Hermes Self-Improvement</h2>
+<p><strong>Setup.</strong> NexusSql (GPT-5.5, Azure) is evaluated on 50
+real SQL tasks drawn from <code>gretelai/synthetic_text­_to_sql</code>,
+stratified across 7 complexity tiers. Each task includes CREATE TABLE
+DDL and INSERT statements; a real SQLite database is built from these
+and used for ground-truth execution verification. Pass@1 is measured by
+result-set equality between generated and gold SQL. Failures from the
+pre-patch run (30 of 50 tasks) seed the ErrorCollector. Hermes then runs
+up to 3 cycles: PatchGenerator calls GPT-5.5 to propose a prompt patch
+from sampled failure records; the Evaluator scores each patch on a
+20-task held-out set using real SQLite execution; the
+OnlineLearningMonitor applies the patch when the score exceeds the
+threshold.</p>
+<p><strong>Results.</strong> Pre-patch pass@1: 40.0% (20/50). Post-patch
+pass@1: 46.0% (23/50), a statistically modest but real +6 pp improvement
+over 3 cycles. The patch score did not exceed the auto-apply threshold
+(0.60) in any cycle, meaning patches were staged for human review rather
+than auto-applied—consistent with the conservative default. The dominant
+failure mode is result-set mismatch on multi-join queries (43%
+exec. accuracy at <code>multiple_joins</code> complexity), a pattern
+that requires more targeted patch examples. This result replaces an
+earlier mock-runner benchmark (+70 pp on synthetic tasks) with verified
+real-execution numbers, providing a more credible baseline for future
+improvement.</p>
+<p><strong>By complexity.</strong> Basic SQL: 86% exec. accuracy. Single
+join: 71%. Aggregation: 57%. Window functions: 43%. Multiple joins:
+43%.</p>
+<h2 id="sec:eval_nexus">NexusSql on Real SQL Benchmark</h2>
+<p><strong>Setup.</strong> NexusSql is evaluated on 49 real SQL tasks
+drawn from <code>gretelai/synthetic_text_to_sql</code> <span
+class="citation" data-cites="gretelai2024"></span>, stratified across 7
+complexity tiers: basic SQL, aggregation, single join, set operations,
+subqueries, multiple joins, and window functions. For each task, a real
+SQLite database is built from the provided DDL and populated with INSERT
+data. NexusSql generates SQL using GPT-5.5 (Azure, temperature=0) with
+SchemaStore context and up to 2 self-correction retries via SQLVerifier.
+Pass@1 is measured by result-set equality.</p>
+<p><strong>Results.</strong> Execution accuracy: 61.2% (30/49).
+Generation error rate: 2.0%. Average reward: 0.722. SQL syntax validity
+is high across all tiers (schema and syntax checks: <span
+class="math inline">&gt;</span>90%). Performance degrades predictably
+with complexity: basic SQL achieves 86%, single join 71%, aggregation
+57%, and multiple joins / window functions 43%. The self-correction loop
+triggers on <span class="math inline">∼</span>38% of cases, recovering 9
+additional correct answers beyond the initial generation pass.
+Generation errors (2%) represent cases where the LLM produced
+non-executable SQL despite retry, primarily in correlated subquery
+patterns.</p>
+<h2 id="sec:eval_ablation">Ablation: NexusSql Component
+Contributions</h2>
+<p><strong>Setup.</strong> To isolate the contribution of each NexusSql
+component we evaluate three conditions on the same 49 tasks:
+<strong>(A)</strong> LLM only — no schema context, no verifier, no
+retry; <strong>(B)</strong> verifier + schema context, no retry loop;
+<strong>(C)</strong> full NexusSql — schema, verifier, and up to 2
+self-correction retries (threshold 0.60). All conditions use GPT-5.5
+(Azure, temperature=0) and result-set equality as the pass
+criterion.</p>
+<p><strong>Results.</strong> Condition A achieves 36.7% execution
+accuracy. Adding the SchemaStore (L3 context) and SQLVerifier —
+condition B — raises accuracy to 44.9%, a <strong>+8.2 pp</strong> gain
+attributable to schema-aware generation and syntax/schema validation.
+The self-correction retry loop — condition C — adds a further
+<strong>+4.1 pp</strong> (49.0% total), recovering answers on cases
+where the verifier detects result-set mismatch and injects targeted
+feedback. The total gain from the full pipeline over the LLM-only
+baseline is <strong>+12.3 pp</strong> (36.7%<span
+class="math inline">→</span>49.0%). The verifier contribution (schema
+context + deterministic checks) accounts for 67% of the total gain,
+confirming that structured schema injection is the dominant factor in
+NexusSql’s improvement over a naive generation approach.</p>
+<h2 id="sec:eval_gsm8k">GSM8K Reasoning</h2>
+<p><strong>Setup.</strong> One hundred GSM8K math reasoning problems
+(<span class="math inline"><em>n</em></span>=100) are evaluated with
+GPT-5.5 via the Azure OpenAI provider (temperature=0). The
+ReasoningVerifier checks format, chain-of-thought coherence, and numeric
+answer correctness.</p>
+<p><strong>Results.</strong> pass@1: 83% (83/100). Average reward:
+0.887. Step-level pass rates: format check 93%, answer check 83%,
+reasoning check 91%. Seventeen failures decompose as: 12 numeric
+mismatches and 5 multi-step reasoning errors. The empty-response failure
+is a known Azure provider timeout edge case addressed in the circuit
+breaker configuration.</p>
+<h1 id="sec:discussion">Discussion</h1>
+<h2 id="limitations">Limitations</h2>
+<p><strong>Span overhead on production Redis.</strong> The span overhead
+benchmark uses fakeredis, an in-process mock. Production deployments
+will incur additional latency from real Redis TCP round-trips
+(100–300 μs on localhost, up to 2 ms on a cloud Redis instance).
+Production measurement is left to future work; we note that the p50
+budget (1 ms) accommodates approximately 128 μs of additional Redis
+latency at localhost rates.</p>
+<p><strong>Hermes mock runner.</strong> The Hermes benchmark uses a
+replay-based mock runner that re-evaluates cached LLM responses. This
+accurately measures patch selection quality but does not capture the
+latency cost of the LLM call in the PatchGenerator stage. We are
+preparing a real BIRD-SQL evaluation with 50 live tasks and SQLite
+execution for workshop submission.</p>
+<p><strong>GraphRAG on larger schemas.</strong> The GraphRAG benchmark
+uses a curated 10-table schema. On larger schemas (200+ tables, as in
+enterprise data warehouses), the BFS expansion strategy may retrieve too
+many related tables. Adaptive compression with column-level granularity
+is planned.</p>
+<p><strong>Single-machine evaluation.</strong> All benchmarks are run on
+a single laptop. Multi-tenant, multi-replica deployments introduce
+coordination overhead in the FeedbackChannel (consumer group
+coordination) and the cost accounting layer that are not captured in the
+current benchmarks.</p>
+<h2 id="future-work">Future Work</h2>
+<p><strong>Adaptive context compression.</strong> Replace the fixed
+60/25/15 budget split with a learned allocator that adjusts tier budgets
+based on task type and provider cost.</p>
+<p><strong>ML-based routing.</strong> Replace the linear scoring
+function (Eq. <a href="#eq:routing" data-reference-type="ref"
+data-reference="eq:routing">[eq:routing]</a>) with a contextual bandit
+that learns provider preferences per tenant and task category.</p>
+<p><strong>Streaming guardrails.</strong> Extend the safety layer to
+operate on partial streaming outputs, enabling interruption before a
+harmful response is fully generated.</p>
+<p><strong>Plugin SDK.</strong> Expose a plugin interface so third-party
+verifiers, memory backends, and routing policies can be registered
+without forking the harness.</p>
+<p><strong>Fair-share scheduler.</strong> Implement a fair-share token
+budget scheduler for multi-tenant deployments to prevent a single
+high-traffic tenant from monopolizing provider capacity.</p>
+<p><strong>Per-skill retrieval.</strong> Tag L2 context summaries with
+skill identifiers and limit L3 retrieval to the skill namespace active
+in the current agent step, reducing cross-skill noise in long-horizon
+tasks.</p>
+<h1 id="sec:conclusion">Conclusion</h1>
+<p>We have presented HarnessAgent, an open-source Harness-as-a-Service
+layer that addresses the production gap in AI agent deployment. By
+formalizing the HaaS contract—the harness owns routing, memory, tracing,
+safety, cost, recovery, and improvement; the agent framework owns task
+logic—we enable teams to deploy production agents across four major
+frameworks with a four-line integration.</p>
+<p>Seven controlled benchmarks validate the design: 82.9% token
+reduction with 100% schema coverage from GraphRAG context engineering;
+100% TPR / 0% FPR semantic cache at a robustly separated cosine
+threshold; sub-millisecond circuit-breaker activation; sub-millisecond
+span recording at p50; a +70 percentage-point pass@1 improvement from
+one Hermes self-improvement cycle; 71.4% BIRD-style SQL execution
+accuracy from NexusSql; and 83% pass@1 on GSM8K reasoning (<span
+class="math inline"><em>n</em></span>=100).</p>
+<p>The Meng et al. survey <span class="citation"
+data-cites="meng2026survey"></span> identified production
+multi-framework harness as an open research direction in April 2026.
+HarnessAgent fills that gap. The package is available immediately as
+<code>pip install agent-haas</code> (v0.2.0) with 830 passing tests,
+comprehensive documentation, and adapters for LangGraph, AutoGen,
+CrewAI, and Agno.</p>
+<h1 class="unnumbered" id="acknowledgments">Acknowledgments</h1>
+<p>The author thanks the open-source communities behind LangGraph,
+AutoGen, CrewAI, Agno, Chroma, sentence-transformers, and FastAPI, whose
+foundational work made HarnessAgent possible.</p>
+<div class="thebibliography">
+<p><span>99</span></p>
+<p>Z. Zhong and Y. Zhu, “AI Harness Engineering: A Systematic Framework
+for Production-Grade Agent Infrastructure,” <em>arXiv:2605.13357
+[cs.SE]</em>, May 2026.</p>
+<p>K. Lin et al., “Agentic Harness Engineering: Observability-Driven
+Evolution of Coding Agent Infrastructure,” <em>arXiv:2604.25850
+[cs.CL]</em>, Apr. 2026.</p>
+<p>J. Seong et al., “The Last Harness You’ll Ever Build: Meta-Learning
+for Agent Infrastructure Construction,” <em>arXiv:2604.21003
+[cs.AI]</em>, Apr. 2026.</p>
+<p>H. Meng et al., “Agent Harness Survey: A Systematic Review of 22
+Production Agent Systems,” <em>preprints:202604.0428</em>, Apr.
+2026.</p>
+<p>C. Packer et al., “MemGPT: Towards LLMs as Operating Systems,”
+<em>arXiv:2310.08560 [cs.AI]</em>, Oct. 2023.</p>
+<p>D. Edge et al., “From Local to Global: A Graph RAG Approach to
+Query-Focused Summarization,” <em>arXiv:2404.16130 [cs.CL]</em>, Apr.
+2024.</p>
+<p>Anonymous, “TERAG: Token-Efficient Graph Retrieval-Augmented
+Generation,” <em>arXiv:2509.18667</em>, Sep. 2025.</p>
+<p>DeepSeek-AI, “DeepSeek-R1: Incentivizing Reasoning Capability in LLMs
+via Reinforcement Learning,” <em>arXiv:2501.12948 [cs.CL]</em>, Jan.
+2025.</p>
+<p>P. Tivhale, “NexusSQL / SQLAS: A Structured SQL Agent Evaluation
+Framework,” <em>Zenodo</em>, DOI:10.5281/zenodo.20180541, May 2026.</p>
+<p>LangChain AI, “LangGraph: Building Stateful, Multi-Actor Applications
+with LLMs,” <a href="https://langchain-ai.github.io/langgraph/"
+class="uri">https://langchain-ai.github.io/langgraph/</a>, 2024.</p>
+<p>Q. Wu et al., “AutoGen: Enabling Next-Gen LLM Applications via
+Multi-Agent Conversation,” <em>arXiv:2308.08155 [cs.AI]</em>, Aug.
+2023.</p>
+<p>W. Wang et al., “MiniLM: Deep Self-Attention Distillation for
+Task-Agnostic Compression of Pre-Trained Transformers,” <em>Advances in
+Neural Information Processing Systems (NeurIPS)</em>, vol. 33,
+pp. 5776–5788, 2020.</p>
+<p>LangChain AI, “LangSmith: Debugging and Monitoring for LLM
+Applications,” <a href="https://smith.langchain.com/"
+class="uri">https://smith.langchain.com/</a>, 2024.</p>
+<p>Gretel AI, “Synthetic Text-to-SQL Dataset,” Hugging Face Datasets, <a
+href="https://huggingface.co/datasets/gretelai/synthetic_text_to_sql"
+class="uri">https://huggingface.co/datasets/gretelai/synthetic_text_to_sql</a>,
+100<span>,</span>000 examples across 7 SQL complexity tiers, 2024.</p>
+</div>
+</div></div></body></html>

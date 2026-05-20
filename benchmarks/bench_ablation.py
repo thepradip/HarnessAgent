@@ -83,29 +83,26 @@ def _build_db(sql_context: str, db_path: str) -> bool:
 # Conditions
 # ---------------------------------------------------------------------------
 
-async def _generate_sql(task: str, db_path: str, llm: any, condition: str) -> str:
+async def _generate_sql(
+    task: str, db_path: str, llm: any, condition: str,
+    shared_store: any = None,   # pre-warmed schema store — same for B and C
+    shared_verifier: any = None,
+) -> str:
     """Generate SQL under the given condition."""
     from harness.agents.nexus_sql import NexusSql
-    import fakeredis.aioredis as fakeredis
-    from harness.memory.context_engineering import SchemaStore
-    from harness.improvement.rlvr.verifiers import SQLVerifier
-
-    redis = fakeredis.FakeRedis(decode_responses=True)
-    store = SchemaStore.__new__(SchemaStore)
-    store._redis_url = "redis://unused"; store._ttl = 86400; store._client = redis
 
     if condition == "A":
-        # No verifier, no correction
+        # No schema context, no verifier, no retry — pure LLM
         agent = NexusSql(llm_provider=llm, schema_store=None, verifier=None,
                          max_retries=0, correction_threshold=1.1)
     elif condition == "B":
-        # Verifier scores but no retry
-        verifier = SQLVerifier(llm=llm, schema_store=store)
-        agent = NexusSql(llm_provider=llm, schema_store=store, verifier=verifier,
+        # Schema context + verifier, no retry loop
+        agent = NexusSql(llm_provider=llm, schema_store=shared_store,
+                         verifier=shared_verifier,
                          max_retries=0, correction_threshold=1.1)
-    else:  # C — full pipeline
-        verifier = SQLVerifier(llm=llm, schema_store=store)
-        agent = NexusSql(llm_provider=llm, schema_store=store, verifier=verifier,
+    else:  # C — full NexusSql pipeline
+        agent = NexusSql(llm_provider=llm, schema_store=shared_store,
+                         verifier=shared_verifier,
                          max_retries=2, correction_threshold=0.60)
 
     try:
@@ -120,6 +117,8 @@ async def run_condition(
     tasks: list[dict],
     llm: any,
     bird_cache: any,
+    shared_store: any = None,
+    shared_verifier: any = None,
 ) -> dict:
     """Run one condition on all tasks. Returns {exec_acc, gen_error_rate, results}."""
     import tempfile
@@ -133,7 +132,7 @@ async def run_condition(
             context  = row["sql_context"]
             gold_sql = row["sql"]
 
-            # Reuse cached DB or build
+            # Reuse persistent cached DB
             if bird_cache.db_exists(context):
                 db_path = str(bird_cache.db_path(context))
             else:
@@ -146,13 +145,11 @@ async def run_condition(
                 try: os.unlink(tmp)
                 except Exception: pass
 
-            # For condition A (no verifier), check if we have cached gen from condition C
-            generated = None
-            if condition == "A":
-                # Use a fresh generation (different prompt — no schema context)
-                generated = None
-
-            generated = await _generate_sql(question, db_path, llm, condition)
+            generated = await _generate_sql(
+                question, db_path, llm, condition,
+                shared_store=shared_store,
+                shared_verifier=shared_verifier,
+            )
 
             pred = _exec_sql(db_path, generated)
             gold = bird_cache.get_exec(db_path, gold_sql)
@@ -216,14 +213,53 @@ async def run() -> None:
     tasks = tasks[:N_TASKS]
     logger.info("Tasks: %d", len(tasks))
 
-    logger.info("─── Condition A: LLM only (no verifier, no correction) ───")
-    result_a = await run_condition("A", tasks, llm, bird_cache)
+    # Pre-warm shared schema store with all task DBs — same as main benchmark
+    from harness.memory.context_engineering import SchemaStore
+    from harness.improvement.rlvr.verifiers import SQLVerifier
+    import fakeredis.aioredis as fakeredis
+    import tempfile, os
 
-    logger.info("─── Condition B: Verifier only (no correction) ───")
-    result_b = await run_condition("B", tasks, llm, bird_cache)
+    redis = fakeredis.FakeRedis(decode_responses=True)
+    shared_store = SchemaStore.__new__(SchemaStore)
+    shared_store._redis_url = "redis://unused"; shared_store._ttl = 86400
+    shared_store._client = redis
 
-    logger.info("─── Condition C: Full NexusSql (verifier + correction) ───")
-    result_c = await run_condition("C", tasks, llm, bird_cache)
+    logger.info("Pre-warming schema store for %d tasks …", len(tasks))
+    for row in tasks:
+        ctx = row["sql_context"]
+        if bird_cache.db_exists(ctx):
+            db_path = str(bird_cache.db_path(ctx))
+        else:
+            tmp = tempfile.mktemp(suffix=".sqlite")
+            if _build_db(ctx, tmp):
+                bird_cache.copy_db(tmp, ctx)
+                db_path = str(bird_cache.db_path(ctx))
+                try: os.unlink(tmp)
+                except Exception: pass
+            else:
+                continue
+        db_id = Path(db_path).stem
+        try:
+            await shared_store.store_from_sqlite(db_id, db_path)
+        except Exception:
+            pass
+    logger.info("Schema store warmed: %d DBs indexed", len(await redis.keys("harness:schema:*")))
+
+    shared_verifier = SQLVerifier(llm=llm, schema_store=shared_store)
+
+    logger.info("─── Condition A: LLM only (no schema, no verifier, no correction) ───")
+    result_a = await run_condition("A", tasks, llm, bird_cache,
+                                   shared_store=None, shared_verifier=None)
+
+    logger.info("─── Condition B: Schema + verifier, no correction ───")
+    result_b = await run_condition("B", tasks, llm, bird_cache,
+                                   shared_store=shared_store,
+                                   shared_verifier=shared_verifier)
+
+    logger.info("─── Condition C: Full NexusSql (schema + verifier + correction) ───")
+    result_c = await run_condition("C", tasks, llm, bird_cache,
+                                   shared_store=shared_store,
+                                   shared_verifier=shared_verifier)
 
     print(f"\n{'='*60}")
     print(f"Ablation Study — NexusSql self-correction (n={N_TASKS})")
@@ -241,7 +277,7 @@ async def run() -> None:
     print(f"{'='*60}")
 
     output = {
-        "benchmark": "ablation_nexussql",
+        "benchmark": "ablation_nexussql_v2",
         "n_tasks": N_TASKS,
         "conditions": [result_a, result_b, result_c],
         "gains": {
