@@ -47,91 +47,42 @@ HarnessAgent handles all of that.
 
 ## Architecture
 
-```mermaid
-graph TB
-    subgraph CLIENT["Client Layer"]
-        UI[Dashboard / Docs / SDK]
-        API[REST API POST /runs]
-    end
-
-    subgraph HARNESS["HarnessAgent Core"]
-        RUNNER[AgentRunner lifecycle manager]
-
-        subgraph AGENTS["Agent Layer"]
-            BASE[BaseAgent run loop + trace spans]
-            SQL[SQLAgent + schema GraphRAG]
-            CODE[CodeAgent + sandbox]
-            LG[LangGraph Adapter]
-            AG[AutoGen Adapter]
-            CR[CrewAI Adapter]
-        end
-
-        subgraph MEMORY["Memory System"]
-            CE[ContextEngine — paged offload + skill isolation]
-            STM[ShortTermMemory — Redis hot window]
-            LTM[VectorStore — Chroma / Qdrant / Weaviate]
-            GRAPH[GraphStore — NetworkX / Neo4j]
-            RAG[GraphRAG Engine — weighted multi-hop]
-            CACHE[SemanticLLMCache — cosine similarity]
-        end
-
-        subgraph LLM["LLM Router"]
-            ROUTER[Health-aware circuit-broken router]
-            ANT[Claude Sonnet / Haiku / Opus]
-            OAI[GPT-4o / GPT-5 / o4-mini]
-            LOCAL[vLLM / SGLang / llama.cpp]
-        end
-
-        subgraph TOOLS["Tool System"]
-            REG[ToolRegistry — schema validate + safety + timeout]
-            MCP[MCP Servers — stdio or SSE]
-            SQL2[SQL Tools]
-            CODE2[SessionDockerSandbox — zero cold start]
-            FILE[File Tools]
-            SKILLS[SkillStore — vector-indexed reuse library]
-        end
-
-        subgraph SAFETY["Safety + Security"]
-            GUARD[Guardrail Pipeline — input / step / output]
-            POLICY[Policy — blocked tools / code exec / file write]
-            HITL[Human-in-the-Loop]
-            VAULT[SecretProvider — Env / Vault / AWS]
-            SCANNER[SecretScanner — leak detection + redaction]
-            RATE[Rate Limiter]
-            CB[Circuit Breaker]
-        end
-    end
-
-    subgraph OBS["Observability"]
-        TRACE[TraceRecorder — span tree + JSONL]
-        MLFLOW[MLflow — experiment tracking]
-        OTEL[OpenTelemetry — OTel spans]
-        PROM[Prometheus + Grafana]
-        AUDIT[AuditLogger — append-only JSONL]
-        EVENTS[EventBus — Redis Pub/Sub SSE]
-    end
-
-    subgraph IMPROVE["Self-Improvement"]
-        HERMES[Hermes Loop]
-        ERR[ErrorCollector]
-        PATCH[PatchGenerator]
-        EVAL[Evaluator — replay scoring]
-        MONITOR[OnlineLearningMonitor — regression rollback]
-        SKILL_CAP[SkillCapture — auto-save reusable patterns]
-    end
-
-    UI --> API --> RUNNER --> BASE
-    BASE --> LLM & MEMORY & TOOLS & SAFETY
-    BASE --> OBS
-    BASE -.->|failures| IMPROVE
-    IMPROVE -.->|better prompts| AGENTS
-    IMPROVE -.->|captured skills| SKILLS
-    ROUTER --> ANT & OAI & LOCAL
-    STM & LTM & GRAPH --> RAG
-    CE --> STM & LTM
-    REG --> MCP & SQL2 & CODE2 & FILE
-    VAULT --> ROUTER
-    SCANNER --> GUARD
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Client / SDK                                │
+│              REST API  ·  SSE streaming  ·  Python SDK              │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────────────┐
+│                       Orchestration                                 │
+│          AgentRunner  ·  Planner (DAG)  ·  Scheduler  ·  HITL       │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────────────┐
+│                        Agent Layer                                  │
+│   BaseAgent (run loop)  ·  CodeAgent  ·  SQLAgent                   │
+│   LangGraph  ·  AutoGen  ·  CrewAI  ·  OpenClaw adapters            │
+└────┬──────────────┬──────────────┬────────────────┬─────────────────┘
+     │              │              │                │
+┌────▼────┐  ┌──────▼──────┐  ┌───▼────────┐  ┌───▼──────────────────┐
+│  Memory │  │  LLM Router │  │   Tools    │  │  Safety + Security   │
+│         │  │             │  │            │  │                      │
+│Context  │  │Claude · GPT │  │ToolRegistry│  │Guardrail pipeline    │
+│Engine   │  │vLLM · SGLang│  │SQL · Code  │  │Policy enforcement    │
+│GraphRAG │  │llama.cpp    │  │File · MCP  │  │HITL approval         │
+│VectorDB │  │Circuit breaker  │SkillStore  │  │SecretProvider (Vault)│
+│LLM Cache│  │             │  │Session     │  │SecretScanner         │
+└────┬────┘  └─────────────┘  │Sandbox     │  └──────────────────────┘
+     │                        └────────────┘
+┌────▼────────────────────────────────────────────────────────────────┐
+│                       Observability                                 │
+│  TraceRecorder  ·  MLflow  ·  OpenTelemetry  ·  Prometheus  ·  SSE  │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │ failures
+┌──────────────────────────────▼──────────────────────────────────────┐
+│                     Self-Improvement                                │
+│     Hermes Loop  ·  PatchGenerator  ·  Evaluator  ·  SkillCapture   │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
