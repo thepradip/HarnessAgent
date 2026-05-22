@@ -6,7 +6,7 @@ import json
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
@@ -323,3 +323,315 @@ async def test_workspace_files_persist(workspace_mgr):
     ws = await workspace_mgr.create("run1", "t1")
     (ws / "test.txt").write_text("hello")
     assert (ws / "test.txt").read_text() == "hello"
+
+
+# ===========================================================================
+# DockerSandbox — runtime flag
+# ===========================================================================
+
+def test_docker_sandbox_default_runtime_is_runc():
+    from harness.filesystem.sandbox import DockerSandbox
+    sb = DockerSandbox()
+    assert sb._runtime == "runc"
+
+
+def test_docker_sandbox_custom_runtime_stored():
+    from harness.filesystem.sandbox import DockerSandbox
+    sb = DockerSandbox(runtime="runsc")
+    assert sb._runtime == "runsc"
+
+
+@pytest.mark.asyncio
+async def test_docker_sandbox_runc_does_not_add_runtime_flag(tmp_path):
+    """Default runc runtime must NOT add --runtime to the docker command."""
+    from unittest.mock import AsyncMock, patch
+    from harness.filesystem.sandbox import DockerSandbox
+
+    (tmp_path / "run_test.py").write_text("print('hello')")
+    sb = DockerSandbox(runtime="runc", timeout=5.0)
+
+    captured_cmd: list[str] = []
+
+    async def fake_run_command(cmd, workspace_path, env=None):
+        captured_cmd.extend(cmd)
+        from harness.filesystem.sandbox import SandboxResult
+        return SandboxResult(stdout="hello\n", stderr="", exit_code=0,
+                             timed_out=False, execution_time_ms=10.0)
+
+    with patch.object(sb, "run_command", side_effect=fake_run_command):
+        await sb.run_code("print('hello')", tmp_path)
+
+    assert "--runtime=runc" not in captured_cmd
+
+
+@pytest.mark.asyncio
+async def test_docker_sandbox_gvisor_adds_runtime_flag(tmp_path):
+    """Non-default runtime must inject --runtime=<name> into the docker command."""
+    from unittest.mock import patch
+    from harness.filesystem.sandbox import DockerSandbox
+
+    sb = DockerSandbox(runtime="runsc", timeout=5.0)
+    captured_cmd: list[str] = []
+
+    async def fake_run_command(cmd, workspace_path, env=None):
+        captured_cmd.extend(cmd)
+        from harness.filesystem.sandbox import SandboxResult
+        return SandboxResult(stdout="", stderr="", exit_code=0,
+                             timed_out=False, execution_time_ms=10.0)
+
+    with patch.object(sb, "run_command", side_effect=fake_run_command):
+        await sb.run_code("x = 1", tmp_path)
+
+    assert "--runtime=runsc" in captured_cmd
+
+
+# ===========================================================================
+# SessionDockerSandbox — unit tests (no real Docker)
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_session_sandbox_run_code_raises_when_not_started(tmp_path):
+    from harness.filesystem.sandbox import SessionDockerSandbox, SandboxError
+    sb = SessionDockerSandbox(tmp_path)
+    with pytest.raises(SandboxError, match="not running"):
+        await sb.run_code("print('hi')")
+
+
+@pytest.mark.asyncio
+async def test_session_sandbox_is_alive_false_before_start(tmp_path):
+    from harness.filesystem.sandbox import SessionDockerSandbox
+    sb = SessionDockerSandbox(tmp_path)
+    assert sb.is_alive is False
+
+
+@pytest.mark.asyncio
+async def test_session_sandbox_is_alive_true_after_start(tmp_path):
+    from unittest.mock import AsyncMock, patch
+    from harness.filesystem.sandbox import SessionDockerSandbox
+
+    async def fake_communicate():
+        return (b"fake-container-id-123\n", b"")
+
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = fake_communicate
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        sb = SessionDockerSandbox(tmp_path)
+        await sb._start_container()
+        assert sb.is_alive is True
+        assert sb._container_id == "fake-container-id-123"
+
+
+@pytest.mark.asyncio
+async def test_session_sandbox_stop_clears_container_id(tmp_path):
+    from unittest.mock import AsyncMock, patch
+    from harness.filesystem.sandbox import SessionDockerSandbox
+
+    sb = SessionDockerSandbox(tmp_path)
+    sb._container_id = "abc123"
+
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        await sb._stop_container()
+
+    assert sb._container_id is None
+    assert sb.is_alive is False
+
+
+@pytest.mark.asyncio
+async def test_session_sandbox_stop_noop_when_not_started(tmp_path):
+    from harness.filesystem.sandbox import SessionDockerSandbox
+    sb = SessionDockerSandbox(tmp_path)
+    await sb._stop_container()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_session_sandbox_run_code_returns_result(tmp_path):
+    from unittest.mock import AsyncMock, patch
+    from harness.filesystem.sandbox import SessionDockerSandbox
+
+    sb = SessionDockerSandbox(tmp_path, timeout=10.0)
+    sb._container_id = "live-container"
+
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"42\n", b""))
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        result = await sb.run_code("print(42)")
+
+    assert result.stdout == "42\n"
+    assert result.exit_code == 0
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_session_sandbox_run_code_timeout(tmp_path):
+    import asyncio as _asyncio
+    from unittest.mock import AsyncMock, patch
+    from harness.filesystem.sandbox import SessionDockerSandbox
+
+    sb = SessionDockerSandbox(tmp_path, timeout=1.0)
+    sb._container_id = "live-container"
+
+    mock_proc = AsyncMock()
+    mock_proc.returncode = None
+    mock_proc.kill = MagicMock()
+
+    async def slow_communicate():
+        await _asyncio.sleep(99)
+        return b"", b""
+
+    mock_proc.communicate = slow_communicate
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        result = await sb.run_code("import time; time.sleep(99)", timeout=0.05)
+
+    assert result.timed_out is True
+    assert "timed out" in result.stderr.lower()
+
+
+@pytest.mark.asyncio
+async def test_session_sandbox_detects_container_death(tmp_path):
+    from unittest.mock import AsyncMock, patch
+    from harness.filesystem.sandbox import SessionDockerSandbox, SandboxError
+
+    sb = SessionDockerSandbox(tmp_path)
+    sb._container_id = "dead-container"
+
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 1
+    mock_proc.communicate = AsyncMock(
+        return_value=(b"", b"Error response from daemon: No such container: dead-container")
+    )
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        with pytest.raises(SandboxError, match="Session container died"):
+            await sb.run_code("x = 1")
+
+    assert sb.is_alive is False
+
+
+@pytest.mark.asyncio
+async def test_session_sandbox_start_failure_raises_sandbox_error(tmp_path):
+    from unittest.mock import AsyncMock, patch
+    from harness.filesystem.sandbox import SessionDockerSandbox, SandboxError
+
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 1
+    mock_proc.communicate = AsyncMock(return_value=(b"", b"docker: image not found"))
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        sb = SessionDockerSandbox(tmp_path)
+        with pytest.raises(SandboxError, match="Failed to start session container"):
+            await sb._start_container()
+
+
+@pytest.mark.asyncio
+async def test_session_sandbox_gvisor_runtime_in_start_cmd(tmp_path):
+    """gVisor runtime flag must appear in the docker run command."""
+    from unittest.mock import AsyncMock, patch
+    from harness.filesystem.sandbox import SessionDockerSandbox
+
+    captured_cmds: list[list[str]] = []
+
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"container-xyz\n", b""))
+
+    async def capture(*args, **kwargs):
+        captured_cmds.append(list(args))
+        return mock_proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=capture):
+        sb = SessionDockerSandbox(tmp_path, runtime="runsc")
+        await sb._start_container()
+
+    flat = [a for cmd in captured_cmds for a in cmd]
+    assert "--runtime=runsc" in flat
+
+
+@pytest.mark.asyncio
+async def test_session_sandbox_runc_not_in_start_cmd(tmp_path):
+    """Default runc must NOT add --runtime flag."""
+    from unittest.mock import AsyncMock, patch
+    from harness.filesystem.sandbox import SessionDockerSandbox
+
+    captured_cmds: list[list[str]] = []
+
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"container-xyz\n", b""))
+
+    async def capture(*args, **kwargs):
+        captured_cmds.append(list(args))
+        return mock_proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=capture):
+        sb = SessionDockerSandbox(tmp_path, runtime="runc")
+        await sb._start_container()
+
+    flat = [a for cmd in captured_cmds for a in cmd]
+    assert "--runtime=runc" not in flat
+
+
+# ===========================================================================
+# RunCodeTool — session priority
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_run_code_tool_uses_session_when_alive(tmp_path):
+    """When a live session is in ctx.metadata, RunCodeTool should use it."""
+    from unittest.mock import AsyncMock, MagicMock
+    from harness.tools.code_tools import RunCodeTool
+    from harness.filesystem.sandbox import SandboxResult
+
+    mock_session = MagicMock()
+    mock_session.is_alive = True
+    mock_session.run_code = AsyncMock(return_value=SandboxResult(
+        stdout="session_result\n", stderr="", exit_code=0,
+        timed_out=False, execution_time_ms=5.0,
+    ))
+
+    tool = RunCodeTool()
+    ctx = MagicMock()
+    ctx.metadata = {"docker_session": mock_session}
+    ctx.run_id = "r1"
+    ctx.step_count = 1
+    ctx.workspace_path = tmp_path
+
+    result = await tool.execute(ctx, {"code": "print('hi')"})
+
+    mock_session.run_code.assert_called_once()
+    assert result.data["stdout"] == "session_result\n"
+
+
+@pytest.mark.asyncio
+async def test_run_code_tool_skips_dead_session(tmp_path):
+    """A session with is_alive=False must be skipped silently."""
+    from unittest.mock import AsyncMock, MagicMock
+    from harness.tools.code_tools import RunCodeTool
+
+    dead_session = MagicMock()
+    dead_session.is_alive = False
+
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"subprocess_out\n", b""))
+
+    tool = RunCodeTool()
+    ctx = MagicMock()
+    ctx.metadata = {"docker_session": dead_session}
+    ctx.run_id = "r1"
+    ctx.step_count = 1
+    ctx.workspace_path = tmp_path
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        result = await tool.execute(ctx, {"code": "print('hi')"})
+
+    dead_session.run_code.assert_not_called()
+    assert result.data is not None

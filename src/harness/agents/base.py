@@ -200,6 +200,9 @@ class BaseAgent:
                 # 2. Resume from checkpoint — restores ctx counters and history
                 history = await self._maybe_resume_checkpoint(ctx)
 
+                # 3. Start a persistent sandbox session if configured
+                await self._start_docker_session(ctx)
+
                 while ctx.is_budget_ok():
                     # 3a. Check real-time feedback channel
                     await self._apply_feedback(ctx, history)
@@ -302,8 +305,17 @@ class BaseAgent:
                             await self._end_trace_span(ctx, _gs_id, SpanStatus.OK)
                             logger.debug("Safety output check raised: %s", exc)
 
+                    # Redact any leaked secrets/PII before the content enters history,
+                    # checkpoints, or memory — do this regardless of pipeline type.
+                    safe_content = response.content
+                    if self._safety_pipeline is not None and hasattr(self._safety_pipeline, "redact"):
+                        try:
+                            safe_content = self._safety_pipeline.redact(response.content)
+                        except Exception:
+                            pass
+
                     # Add assistant message to history
-                    history.append({"role": "assistant", "content": response.content})
+                    history.append({"role": "assistant", "content": safe_content})
 
                     # 3k. Push assistant response to short-term memory
                     if ctx.memory is not None:
@@ -495,6 +507,9 @@ class BaseAgent:
                 await self._emit_event(StepEvent.failed(ctx, str(exc)))
 
             finally:
+                # Stop the persistent sandbox session (always, even on exception)
+                await self._stop_docker_session(ctx)
+
                 # Always checkpoint so runs can be resumed or inspected after any exit
                 await self._save_checkpoint(ctx, history)
 
@@ -1046,6 +1061,54 @@ class BaseAgent:
         except Exception as exc:
             logger.debug("_retrieve_skills failed: %s", exc)
             return ""
+
+    async def _start_docker_session(self, ctx: AgentContext) -> None:
+        """Start a persistent sandbox container for this run if configured.
+
+        Enabled when ``ctx.metadata["sandbox_session"]`` is truthy or the
+        global ``sandbox_session_reuse`` config flag is set.  The running
+        session is stored at ``ctx.metadata["docker_session"]`` so
+        ``RunCodeTool`` can find it without any additional wiring.
+        """
+        enabled = ctx.metadata.get("sandbox_session", False)
+        if not enabled:
+            try:
+                from harness.core.config import get_config
+                enabled = get_config().sandbox_session_reuse
+            except Exception:
+                pass
+        if not enabled:
+            return
+
+        try:
+            from harness.filesystem.sandbox import SessionDockerSandbox, memory_for_workload
+            if not await SessionDockerSandbox.is_available():
+                logger.debug("Docker not available; skipping session sandbox")
+                return
+
+            from harness.core.config import get_config
+            cfg = get_config()
+            session = SessionDockerSandbox(
+                workspace_path=ctx.workspace_path,
+                memory_limit=memory_for_workload(cfg.sandbox_workload),
+                runtime=cfg.sandbox_runtime,
+            )
+            await session.__aenter__()
+            ctx.metadata["docker_session"] = session
+            logger.info("Docker session started for run %s", ctx.run_id[:8])
+        except Exception as exc:
+            logger.warning("Failed to start Docker session: %s", exc)
+
+    async def _stop_docker_session(self, ctx: AgentContext) -> None:
+        """Stop the persistent sandbox container, if one is running."""
+        session = ctx.metadata.pop("docker_session", None)
+        if session is None:
+            return
+        try:
+            await session.__aexit__(None, None, None)
+            logger.info("Docker session stopped for run %s", ctx.run_id[:8])
+        except Exception as exc:
+            logger.warning("Failed to stop Docker session: %s", exc)
 
     async def _fit_history(
         self,

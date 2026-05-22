@@ -87,6 +87,13 @@ class Settings(BaseSettings):
     #   data    → 512 MiB  (pandas / numpy with real datasets)
     #   ml      → 2 GiB    (torch / sklearn model runs)
     sandbox_workload: Literal["general", "data", "ml"] = "general"
+    # Container runtime for code execution sandboxes.
+    # "runc"  — default Docker runtime (no extra setup)
+    # "runsc" — gVisor (kernel-level syscall interception, stronger isolation)
+    # "kata"  — Kata Containers (lightweight VM per sandbox, strongest isolation)
+    sandbox_runtime: str = "runc"
+    # Reuse one container per agent run (eliminates per-call cold-start overhead).
+    sandbox_session_reuse: bool = False
 
     # -------------------------------------------------------------------------
     # Optional Agent Tool Backends

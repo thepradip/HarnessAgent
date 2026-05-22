@@ -239,11 +239,16 @@ class _HardConstraintPipeline:
     Provides three layers of protection with zero external dependencies:
     - Input: regex-based prompt-injection detection
     - Step: blocked tool-name enforcement
-    - Output: regex-based PII redaction
+    - Output: PII redaction + secret leak detection/redaction
     """
 
     def __init__(self, blocked_tools: list[str] | None = None) -> None:
         self._blocked_tools: set[str] = set(blocked_tools or [])
+        try:
+            from harness.security.scanner import SecretScanner
+            self._secret_scanner: Any = SecretScanner()
+        except Exception:
+            self._secret_scanner = None
 
     async def check_input(self, payload: Any) -> _GuardResult:
         content = ""
@@ -279,10 +284,31 @@ class _HardConstraintPipeline:
         return _GuardResult(blocked=False)
 
     async def check_output(self, payload: Any) -> _GuardResult:
+        """Scan output for leaked secrets. Never blocks — redacts and warns."""
+        content = ""
+        if isinstance(payload, dict):
+            content = str(payload.get("content", ""))
+        elif isinstance(payload, str):
+            content = payload
+
+        if content and self._secret_scanner is not None:
+            matches = self._secret_scanner.scan(content)
+            if matches:
+                names = ", ".join(m.pattern_name for m in matches)
+                logger.warning(
+                    "Secret leak detected in LLM output (%s) — redacting before use",
+                    names,
+                )
+                return _GuardResult(
+                    blocked=False,
+                    reason=f"secret_detected:{names}",
+                )
         return _GuardResult(blocked=False)
 
     def redact(self, text: str) -> str:
-        """Redact common PII patterns from text."""
+        """Redact PII and API keys/tokens from text."""
         for pattern, replacement in _PII_PATTERNS:
             text = pattern.sub(replacement, text)
+        if self._secret_scanner is not None:
+            text = self._secret_scanner.redact(text)
         return text

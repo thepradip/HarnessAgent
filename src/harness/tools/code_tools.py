@@ -66,7 +66,27 @@ class RunCodeTool:
         code: str = args["code"]
         timeout: float = float(args.get("timeout", 30.0))
 
-        # Try DockerSandbox first
+        # Prefer a persistent session container when one is live for this run
+        session = ctx.metadata.get("docker_session") if ctx.metadata else None
+        if session is not None and getattr(session, "is_alive", False):
+            try:
+                res = await session.run_code(code, timeout=timeout)
+                result_data = {
+                    "stdout": res.stdout,
+                    "stderr": res.stderr,
+                    "exit_code": res.exit_code,
+                    "timed_out": res.timed_out,
+                }
+                if _is_oom(result_data):
+                    return ToolResult(data=None, error=_OOM_ERROR)
+                await self._save_output_to_workspace(ctx, code, result_data)
+                return ToolResult(data=result_data)
+            except Exception as exc:
+                logger.warning(
+                    "Session exec failed, falling back to per-call sandbox: %s", exc
+                )
+
+        # Try DockerSandbox (per-call, cold start each time)
         if self._docker_sandbox is not None:
             try:
                 result_data = await self._run_in_docker(ctx, code, timeout)
@@ -108,13 +128,14 @@ class RunCodeTool:
     async def _run_in_docker(
         self, ctx: AgentContext, code: str, timeout: float
     ) -> dict[str, Any]:
-        """Execute code via DockerSandbox."""
-        return await self._docker_sandbox.run_python(
-            code=code,
-            timeout=timeout,
-            run_id=ctx.run_id,
-            workspace_path=str(ctx.workspace_path),
-        )
+        """Execute code via DockerSandbox (one container per call)."""
+        res = await self._docker_sandbox.run_code(code, ctx.workspace_path)
+        return {
+            "stdout": res.stdout,
+            "stderr": res.stderr,
+            "exit_code": res.exit_code,
+            "timed_out": res.timed_out,
+        }
 
     async def _run_restricted(
         self, ctx: AgentContext, code: str, timeout: float

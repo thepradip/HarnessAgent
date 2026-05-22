@@ -328,15 +328,17 @@ async def test_run_code_tool_subprocess_normal_failure_not_oom(tmp_path):
 async def test_run_code_tool_docker_oom_returns_error(tmp_path):
     from harness.tools.code_tools import RunCodeTool
 
+    from harness.filesystem.sandbox import SandboxResult as FSSandboxResult
     mock_docker = MagicMock()
-    mock_docker.run_python = AsyncMock(return_value={
-        "stdout": "", "stderr": "Killed", "exit_code": 137, "timed_out": False
-    })
+    mock_docker.run_code = AsyncMock(return_value=FSSandboxResult(
+        stdout="", stderr="Killed", exit_code=137, timed_out=False, execution_time_ms=100.0
+    ))
     tool = RunCodeTool(docker_sandbox=mock_docker)
     ctx = MagicMock()
     ctx.run_id = "test-run"
     ctx.step_count = 1
     ctx.workspace_path = tmp_path
+    ctx.metadata = {}  # no live session
 
     result = await tool.execute(ctx, {"code": "x = [0]*10**9"})
 
