@@ -9,6 +9,19 @@ from harness.tools.file_tools import ListWorkspaceTool, ReadFileTool, WriteFileT
 from harness.tools.mcp_client import MCPToolAdapter
 from harness.tools.registry import ToolRegistry
 from harness.tools.skills import Skill, SkillRegistry
+from harness.tools.skill_store import (
+    RedFlag,
+    RedFlagKind,
+    SkillArtifact,
+    SkillCapture,
+    SkillHealthReport,
+    SkillStore,
+    SkillType,
+    ValidationStatus,
+    check_requirements,
+    detect_flags,
+    format_skills_for_context,
+)
 from harness.tools.sql_tools import (
     DescribeTableTool,
     ExecuteQueryTool,
@@ -29,4 +42,15 @@ __all__ = [
     "LintCodeTool",
     "ApplyPatchTool",
     "ListWorkspaceTool",
+    "SkillStore",
+    "SkillArtifact",
+    "SkillCapture",
+    "SkillType",
+    "ValidationStatus",
+    "RedFlag",
+    "RedFlagKind",
+    "SkillHealthReport",
+    "check_requirements",
+    "detect_flags",
+    "format_skills_for_context",
 ]

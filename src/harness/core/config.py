@@ -79,6 +79,16 @@ class Settings(BaseSettings):
     workspace_base_path: str = "/workspaces"
 
     # -------------------------------------------------------------------------
+    # Sandbox
+    # -------------------------------------------------------------------------
+    # Workload profile for the code execution sandbox.
+    # Controls Docker container memory limit:
+    #   general → 256 MiB  (scripting, algorithms)
+    #   data    → 512 MiB  (pandas / numpy with real datasets)
+    #   ml      → 2 GiB    (torch / sklearn model runs)
+    sandbox_workload: Literal["general", "data", "ml"] = "general"
+
+    # -------------------------------------------------------------------------
     # Optional Agent Tool Backends
     # -------------------------------------------------------------------------
     sql_connection_string: str = ""

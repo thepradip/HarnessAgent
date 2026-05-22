@@ -182,7 +182,84 @@ async def test_resume_from_checkpoint(agent_context):
     agent = _make_agent(router=router, checkpoint_manager=mock_checkpoint)
     ctx = _make_ctx(agent_context)
     await agent.run(ctx)
-    mock_checkpoint.load.assert_called_once()
+    mock_checkpoint.load.assert_called_once_with(ctx.run_id, ctx.tenant_id)
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_step_and_token_counts(agent_context):
+    """Checkpoint step_count and token_count are applied to ctx before the loop runs."""
+    mock_checkpoint = AsyncMock()
+    router = AsyncMock()
+    router.complete = AsyncMock(return_value=_make_llm_response("done"))
+    agent = _make_agent(router=router, checkpoint_manager=mock_checkpoint)
+    # Set AFTER _make_agent so the factory's default None load isn't used
+    mock_checkpoint.load = AsyncMock(return_value=MagicMock(
+        step_count=7, token_count=1000, history_snapshot=[]
+    ))
+    ctx = _make_ctx(agent_context)
+    await agent.run(ctx)
+    # run adds 1 tick on top of the restored 7
+    assert ctx.step_count >= 7
+    assert ctx.token_count >= 1000
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_history_into_loop(agent_context):
+    """history_snapshot from checkpoint is used as the initial history list."""
+    prior_history = [
+        {"role": "user", "content": "prior task"},
+        {"role": "assistant", "content": "prior answer"},
+    ]
+    mock_checkpoint = AsyncMock()
+    captured_messages: list = []
+
+    async def capturing_complete(messages, system, tools=None, max_tokens=256):
+        captured_messages.extend(messages)
+        return _make_llm_response("done")
+
+    router = AsyncMock()
+    router.complete = AsyncMock(side_effect=capturing_complete)
+    agent = _make_agent(router=router, checkpoint_manager=mock_checkpoint)
+    # Set AFTER _make_agent so the factory's default None load isn't used
+    mock_checkpoint.load = AsyncMock(return_value=MagicMock(
+        step_count=2, token_count=100, history_snapshot=prior_history
+    ))
+    ctx = _make_ctx(agent_context)
+    await agent.run(ctx)
+
+    # Prior history messages should appear in the first LLM call
+    all_content = [m.get("content") for m in captured_messages]
+    assert "prior answer" in all_content
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_saved_on_failure(agent_context):
+    """Checkpoint is written in finally even when an exception propagates."""
+    mock_checkpoint = AsyncMock()
+    mock_checkpoint.load = AsyncMock(return_value=None)
+    mock_checkpoint.save = AsyncMock()
+    router = AsyncMock()
+    router.complete = AsyncMock(side_effect=RuntimeError("crash"))
+    agent = _make_agent(router=router, checkpoint_manager=mock_checkpoint)
+    ctx = _make_ctx(agent_context)
+    result = await agent.run(ctx)
+    assert result.success is False
+    mock_checkpoint.save.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_saved_on_success(agent_context):
+    """Checkpoint is written in finally on a clean successful run."""
+    mock_checkpoint = AsyncMock()
+    mock_checkpoint.load = AsyncMock(return_value=None)
+    mock_checkpoint.save = AsyncMock()
+    router = AsyncMock()
+    router.complete = AsyncMock(return_value=_make_llm_response("done"))
+    agent = _make_agent(router=router, checkpoint_manager=mock_checkpoint)
+    ctx = _make_ctx(agent_context)
+    result = await agent.run(ctx)
+    assert result.success is True
+    mock_checkpoint.save.assert_called()
 
 
 @pytest.mark.asyncio
@@ -256,3 +333,110 @@ async def test_run_records_trace_spans(agent_context, redis_client, tmp_path):
     assert SpanKind.RUN in kinds
     assert kinds.count(SpanKind.LLM) == 2
     assert SpanKind.TOOL in kinds
+
+
+# ===========================================================================
+# _check_policy — per-tenant policy enforcement
+# ===========================================================================
+
+def _make_policy(**kwargs):
+    from harness.safety.policies import HarnessPolicy
+    return HarnessPolicy(tenant_id="t1", **kwargs)
+
+
+def _make_call(name: str):
+    return ToolCall(id="x", name=name, args={})
+
+
+@pytest.mark.asyncio
+async def test_check_policy_no_policy_is_noop(agent_context):
+    """No policy in metadata → no exception for any tool."""
+    agent = _make_agent()
+    ctx = _make_ctx(agent_context)
+    # policy key absent — should not raise
+    await agent._check_policy(ctx, _make_call("drop_table"))
+
+
+@pytest.mark.asyncio
+async def test_check_policy_blocked_tool_raises(agent_context):
+    from harness.core.errors import SafetyViolation
+    agent = _make_agent()
+    ctx = _make_ctx(agent_context)
+    ctx.metadata["policy"] = _make_policy(blocked_tools=["drop_table"])
+    with pytest.raises(SafetyViolation, match="blocked by tenant policy"):
+        await agent._check_policy(ctx, _make_call("drop_table"))
+
+
+@pytest.mark.asyncio
+async def test_check_policy_allowed_tool_passes(agent_context):
+    agent = _make_agent()
+    ctx = _make_ctx(agent_context)
+    ctx.metadata["policy"] = _make_policy(blocked_tools=["drop_table"])
+    await agent._check_policy(ctx, _make_call("read_file"))  # not blocked
+
+
+@pytest.mark.asyncio
+async def test_check_policy_code_exec_disabled_blocks_run_python(agent_context):
+    from harness.core.errors import SafetyViolation
+    agent = _make_agent()
+    ctx = _make_ctx(agent_context)
+    ctx.metadata["policy"] = _make_policy(allow_code_execution=False)
+    with pytest.raises(SafetyViolation, match="code execution"):
+        await agent._check_policy(ctx, _make_call("run_python"))
+
+
+@pytest.mark.asyncio
+async def test_check_policy_code_exec_disabled_blocks_exec_prefix(agent_context):
+    from harness.core.errors import SafetyViolation
+    agent = _make_agent()
+    ctx = _make_ctx(agent_context)
+    ctx.metadata["policy"] = _make_policy(allow_code_execution=False)
+    with pytest.raises(SafetyViolation, match="code execution"):
+        await agent._check_policy(ctx, _make_call("execute_shell"))
+
+
+@pytest.mark.asyncio
+async def test_check_policy_code_exec_enabled_allows_run_python(agent_context):
+    agent = _make_agent()
+    ctx = _make_ctx(agent_context)
+    ctx.metadata["policy"] = _make_policy(allow_code_execution=True)
+    await agent._check_policy(ctx, _make_call("run_python"))
+
+
+@pytest.mark.asyncio
+async def test_check_policy_file_write_disabled_blocks_write_file(agent_context):
+    from harness.core.errors import SafetyViolation
+    agent = _make_agent()
+    ctx = _make_ctx(agent_context)
+    ctx.metadata["policy"] = _make_policy(allow_file_write=False)
+    with pytest.raises(SafetyViolation, match="file write"):
+        await agent._check_policy(ctx, _make_call("write_file"))
+
+
+@pytest.mark.asyncio
+async def test_check_policy_file_write_disabled_blocks_apply_patch(agent_context):
+    from harness.core.errors import SafetyViolation
+    agent = _make_agent()
+    ctx = _make_ctx(agent_context)
+    ctx.metadata["policy"] = _make_policy(allow_file_write=False)
+    with pytest.raises(SafetyViolation, match="file write"):
+        await agent._check_policy(ctx, _make_call("apply_patch"))
+
+
+@pytest.mark.asyncio
+async def test_check_policy_file_write_enabled_allows_write_file(agent_context):
+    agent = _make_agent()
+    ctx = _make_ctx(agent_context)
+    ctx.metadata["policy"] = _make_policy(allow_file_write=True)
+    await agent._check_policy(ctx, _make_call("write_file"))
+
+
+@pytest.mark.asyncio
+async def test_check_policy_read_file_always_allowed(agent_context):
+    """read_file is not code exec or file write — always passes."""
+    agent = _make_agent()
+    ctx = _make_ctx(agent_context)
+    ctx.metadata["policy"] = _make_policy(
+        allow_code_execution=False, allow_file_write=False
+    )
+    await agent._check_policy(ctx, _make_call("read_file"))

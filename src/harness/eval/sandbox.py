@@ -152,12 +152,13 @@ class SQLSandbox:
 class CodeSandbox:
     """Python/shell execution for evaluation. Wraps DockerSandbox with fallback."""
 
-    def __init__(self, timeout: float = 30.0) -> None:
+    def __init__(self, timeout: float = 30.0, workload: str = "general") -> None:
         self._timeout = timeout
+        self._workload = workload
 
     async def execute(self, action: str, language: str = "python", **_: Any) -> SandboxResult:
         from pathlib import Path
-        from harness.filesystem.sandbox import DockerSandbox, RestrictedPythonExecutor
+        from harness.filesystem.sandbox import DockerSandbox, RestrictedPythonExecutor, memory_for_workload
 
         start = time.monotonic()
 
@@ -165,12 +166,20 @@ class CodeSandbox:
             import tempfile
             with tempfile.TemporaryDirectory() as tmp:
                 ws = Path(tmp)
-                docker = DockerSandbox(timeout=self._timeout)
+                docker = DockerSandbox(
+                    timeout=self._timeout,
+                    memory_limit=memory_for_workload(self._workload),
+                )
                 res = await docker.run_code(action, ws)
                 elapsed = (time.monotonic() - start) * 1000
                 output = {"stdout": res.stdout, "stderr": res.stderr, "exit_code": res.exit_code}
                 raw = res.stdout or res.stderr
-                error = None if res.success else f"exit_code={res.exit_code}: {res.stderr[:300]}"
+                if res.oom_killed:
+                    error = "OOM: container exceeded memory limit"
+                elif not res.success:
+                    error = f"exit_code={res.exit_code}: {res.stderr[:300]}"
+                else:
+                    error = None
                 return SandboxResult(output=output, raw_text=raw,
                                      execution_time_ms=elapsed, error=error)
 

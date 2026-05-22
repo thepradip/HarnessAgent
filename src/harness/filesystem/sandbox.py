@@ -14,6 +14,24 @@ from harness.core.errors import SandboxError
 
 logger = logging.getLogger(__name__)
 
+# Memory limits per workload profile.
+# "general"  — scripting, algorithms, stdlib only
+# "data"     — pandas / numpy with real datasets
+# "ml"       — torch / sklearn model runs
+WORKLOAD_MEMORY: dict[str, str] = {
+    "general": "256m",
+    "data": "512m",
+    "ml": "2g",
+}
+
+
+def memory_for_workload(workload: str) -> str:
+    """Return the Docker memory limit string for a named workload profile.
+
+    Falls back to the "general" limit for unknown names.
+    """
+    return WORKLOAD_MEMORY.get(workload, WORKLOAD_MEMORY["general"])
+
 
 @dataclass
 class SandboxResult:
@@ -28,6 +46,11 @@ class SandboxResult:
     @property
     def success(self) -> bool:
         return self.exit_code == 0 and not self.timed_out
+
+    @property
+    def oom_killed(self) -> bool:
+        """True when Docker OOM-killed the container (exit code 137, not a timeout)."""
+        return self.exit_code == 137 and not self.timed_out
 
 
 class DockerSandbox:

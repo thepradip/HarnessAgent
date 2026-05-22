@@ -14,6 +14,13 @@ from harness.core.errors import FailureClass, ToolError
 
 logger = logging.getLogger(__name__)
 
+_OOM_EXIT_CODE = 137
+_OOM_ERROR = "OOM: container exceeded memory limit"
+
+
+def _is_oom(result: dict[str, Any]) -> bool:
+    return result.get("exit_code") == _OOM_EXIT_CODE and not result.get("timed_out", False)
+
 
 class RunCodeTool:
     """Execute Python code in a sandbox.
@@ -63,6 +70,8 @@ class RunCodeTool:
         if self._docker_sandbox is not None:
             try:
                 result_data = await self._run_in_docker(ctx, code, timeout)
+                if _is_oom(result_data):
+                    return ToolResult(data=None, error=_OOM_ERROR)
                 await self._save_output_to_workspace(ctx, code, result_data)
                 return ToolResult(data=result_data)
             except Exception as exc:
@@ -75,6 +84,8 @@ class RunCodeTool:
         if self._restricted_executor is not None:
             try:
                 result_data = await self._run_restricted(ctx, code, timeout)
+                if _is_oom(result_data):
+                    return ToolResult(data=None, error=_OOM_ERROR)
                 await self._save_output_to_workspace(ctx, code, result_data)
                 return ToolResult(data=result_data)
             except Exception as exc:
@@ -86,6 +97,8 @@ class RunCodeTool:
         # Fallback: subprocess-based execution in temp dir
         try:
             result_data = await self._run_subprocess(ctx, code, timeout)
+            if _is_oom(result_data):
+                return ToolResult(data=None, error=_OOM_ERROR)
             await self._save_output_to_workspace(ctx, code, result_data)
             return ToolResult(data=result_data)
         except Exception as exc:

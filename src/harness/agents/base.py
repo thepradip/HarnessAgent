@@ -46,6 +46,16 @@ _RECENT_MESSAGES_KEEP = 20
 # Directory for per-run logs and conversation history (gitignored)
 _LOG_DIR = Path("logs")
 
+# Tool names whose execution requires allow_code_execution=True in tenant policy
+_CODE_EXEC_TOOLS: frozenset[str] = frozenset({
+    "run_python", "run_code", "execute_code", "exec_python",
+})
+
+# Tool names whose execution requires allow_file_write=True in tenant policy
+_FILE_WRITE_TOOLS: frozenset[str] = frozenset({
+    "write_file", "apply_patch", "create_file", "write_code",
+})
+
 
 def _run_log_path(run_id: str) -> Path:
     """Return path for the per-run JSONL log file."""
@@ -173,6 +183,8 @@ class BaseAgent:
             input_preview=ctx.task[:500],
         )
 
+        history: list[dict[str, Any]] = []
+
         async with self._mlflow_context(ctx):
             try:
                 # Log run start locally
@@ -185,11 +197,8 @@ class BaseAgent:
                     "max_tokens": ctx.max_tokens,
                 })
 
-                # 2. Resume from checkpoint if one exists
-                await self._maybe_resume_checkpoint(ctx)
-
-                # Main agentic loop
-                history: list[dict[str, Any]] = []
+                # 2. Resume from checkpoint — restores ctx counters and history
+                history = await self._maybe_resume_checkpoint(ctx)
 
                 while ctx.is_budget_ok():
                     # 3a. Check real-time feedback channel
@@ -198,11 +207,12 @@ class BaseAgent:
                     # 3b. Fit history to context window
                     history = await self._fit_history(ctx, history)
 
-                    # 3b. Build retrieval context from memory
+                    # 3b. Build retrieval context from memory and skill library
                     retrieval_context = await self._smart_retrieve(ctx)
+                    skill_context = await self._retrieve_skills(ctx)
 
                     # 3c. Build messages
-                    messages = self.build_messages(ctx, history, retrieval_context)
+                    messages = self.build_messages(ctx, history, retrieval_context, skill_context)
                     system_prompt = self.build_system_prompt(ctx)
 
                     # 3d. LLM call with OTel span
@@ -316,8 +326,9 @@ class BaseAgent:
                     # 3m. Execute tool calls — HITL sequential, execution parallel
                     tool_results_for_history: list[dict[str, Any]] = []
 
-                    # HITL must be sequential (interactive human approval)
+                    # Policy and HITL checks are sequential — both are blocking gates
                     for call in response.tool_calls:
+                        await self._check_policy(ctx, call)
                         await self._check_hitl(ctx, call)
 
                     # Execute all approved tool calls in parallel — each in a TOOL span
@@ -484,6 +495,9 @@ class BaseAgent:
                 await self._emit_event(StepEvent.failed(ctx, str(exc)))
 
             finally:
+                # Always checkpoint so runs can be resumed or inspected after any exit
+                await self._save_checkpoint(ctx, history)
+
                 # Save full conversation history to disk (gitignored, local only)
                 if history:
                     _save_conversation(ctx.workspace_path, ctx.run_id, history)
@@ -587,21 +601,20 @@ class BaseAgent:
         ctx: AgentContext,
         history: list[dict[str, Any]],
         retrieval_context: str,
+        skill_context: str = "",
     ) -> list[dict[str, Any]]:
         """Assemble the messages list for the LLM call."""
         messages: list[dict[str, Any]] = []
 
         # If we have retrieval context, prepend it as a user message
-        if retrieval_context and not history:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        f"Relevant context from memory:\n{retrieval_context}\n\n"
-                        f"Task: {ctx.task}"
-                    ),
-                }
-            )
+        if (retrieval_context or skill_context) and not history:
+            parts: list[str] = []
+            if retrieval_context:
+                parts.append(f"Relevant context from memory:\n{retrieval_context}")
+            if skill_context:
+                parts.append(skill_context)
+            parts.append(f"Task: {ctx.task}")
+            messages.append({"role": "user", "content": "\n\n".join(parts)})
         elif not history:
             messages.append({"role": "user", "content": ctx.task})
 
@@ -860,6 +873,44 @@ class BaseAgent:
                 request_id=request.request_id,
             )
 
+    async def _check_policy(self, ctx: AgentContext, call: ToolCall) -> None:
+        """Enforce per-tenant policy restrictions before a tool call executes."""
+        policy = ctx.metadata.get("policy")
+        if policy is None:
+            return
+
+        if policy.is_tool_blocked(call.name):
+            raise SafetyViolation(
+                f"Tool '{call.name}' is blocked by tenant policy",
+                guard_source="policy",
+                failure_class=FailureClass.SAFETY_STEP,
+            )
+
+        tool_lower = call.name.lower()
+        is_code_exec = (
+            call.name in _CODE_EXEC_TOOLS
+            or tool_lower.startswith(("run_", "exec_", "execute_"))
+        )
+        if is_code_exec and not policy.allow_code_execution:
+            raise SafetyViolation(
+                f"Tool '{call.name}' requires code execution, which is disabled by tenant policy",
+                guard_source="policy",
+                failure_class=FailureClass.SAFETY_STEP,
+            )
+
+        tool_lower = call.name.lower()
+        is_file_write = (
+            call.name in _FILE_WRITE_TOOLS
+            or tool_lower.startswith("write_")
+            or tool_lower.endswith("_patch")
+        )
+        if is_file_write and not policy.allow_file_write:
+            raise SafetyViolation(
+                f"Tool '{call.name}' requires file write access, which is disabled by tenant policy",
+                guard_source="policy",
+                failure_class=FailureClass.SAFETY_STEP,
+            )
+
     # ------------------------------------------------------------------
     # LLM calling
     # ------------------------------------------------------------------
@@ -968,6 +1019,34 @@ class BaseAgent:
             logger.debug("smart_retrieve failed: %s", exc)
         return ""
 
+    async def _retrieve_skills(self, ctx: AgentContext) -> str:
+        """Retrieve relevant skill artifacts from the skill library for this task.
+
+        Returns a formatted context block, or empty string when no skill store
+        is configured or no relevant skills are found.
+        """
+        skill_store = ctx.metadata.get("skill_store")
+        if skill_store is None:
+            return ""
+        try:
+            from harness.tools.skill_store import format_skills_for_context
+            skills = await skill_store.retrieve_relevant(
+                query=ctx.task,
+                tenant_id=ctx.tenant_id,
+                k=3,
+            )
+            if skills:
+                # Record usage for each retrieved skill (non-blocking)
+                for skill in skills:
+                    try:
+                        await skill_store.record_use(skill.skill_id, ctx.tenant_id)
+                    except Exception:
+                        pass
+            return format_skills_for_context(skills)
+        except Exception as exc:
+            logger.debug("_retrieve_skills failed: %s", exc)
+            return ""
+
     async def _fit_history(
         self,
         ctx: AgentContext,
@@ -1058,40 +1137,43 @@ class BaseAgent:
     # Checkpointing
     # ------------------------------------------------------------------
 
-    async def _maybe_resume_checkpoint(self, ctx: AgentContext) -> None:
-        """Attempt to load a checkpoint and resume from a previous run."""
+    async def _maybe_resume_checkpoint(
+        self, ctx: AgentContext
+    ) -> list[dict[str, Any]]:
+        """Load a checkpoint and return the restored conversation history.
+
+        Also restores step_count and token_count onto ctx so budget accounting
+        is correct after a resume. Returns an empty list when no checkpoint
+        exists or when checkpoint manager is not configured.
+        """
         if self._checkpoint_manager is None:
-            return
+            return []
         try:
-            checkpoint = await _safe_call(
-                self._checkpoint_manager.load, ctx.run_id
-            )
+            checkpoint = await self._checkpoint_manager.load(ctx.run_id, ctx.tenant_id)
             if checkpoint is not None:
-                ctx.step_count = checkpoint.get("step_count", 0)
-                ctx.token_count = checkpoint.get("token_count", 0)
+                ctx.step_count = checkpoint.step_count
+                ctx.token_count = checkpoint.token_count
                 logger.info(
                     "Resumed run %s from checkpoint at step %d",
                     ctx.run_id,
-                    ctx.step_count,
+                    checkpoint.step_count,
                 )
+                return list(checkpoint.history_snapshot)
         except Exception as exc:
             logger.debug("Checkpoint load failed (will start fresh): %s", exc)
+        return []
 
     async def _save_checkpoint(
         self, ctx: AgentContext, history: list[dict[str, Any]]
     ) -> None:
-        """Persist a checkpoint for potential run resumption."""
+        """Persist ctx state and full conversation history to a local checkpoint."""
         if self._checkpoint_manager is None:
             return
         try:
-            await _safe_call(
-                self._checkpoint_manager.save,
-                ctx.run_id,
-                {
-                    "step_count": ctx.step_count,
-                    "token_count": ctx.token_count,
-                    "history_len": len(history),
-                },
+            await self._checkpoint_manager.save(ctx, history)
+            logger.debug(
+                "Checkpoint saved: run=%s step=%d history=%d",
+                ctx.run_id, ctx.step_count, len(history),
             )
         except Exception as exc:
             logger.debug("Checkpoint save failed: %s", exc)

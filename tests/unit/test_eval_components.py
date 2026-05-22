@@ -205,6 +205,146 @@ async def test_code_sandbox_execute_returns_sandbox_result():
 
 
 # ===========================================================================
+# filesystem.SandboxResult — oom_killed property
+# ===========================================================================
+
+def test_fs_sandbox_result_oom_killed_true():
+    from harness.filesystem.sandbox import SandboxResult as FSSandboxResult
+    r = FSSandboxResult(stdout="", stderr="Killed", exit_code=137, timed_out=False, execution_time_ms=10.0)
+    assert r.oom_killed is True
+
+
+def test_fs_sandbox_result_oom_killed_false_when_timed_out():
+    from harness.filesystem.sandbox import SandboxResult as FSSandboxResult
+    # timed_out flag means the harness killed the process, not the OOM killer
+    r = FSSandboxResult(stdout="", stderr="", exit_code=137, timed_out=True, execution_time_ms=30_000.0)
+    assert r.oom_killed is False
+
+
+def test_fs_sandbox_result_oom_killed_false_normal_failure():
+    from harness.filesystem.sandbox import SandboxResult as FSSandboxResult
+    r = FSSandboxResult(stdout="", stderr="error", exit_code=1, timed_out=False, execution_time_ms=5.0)
+    assert r.oom_killed is False
+
+
+def test_fs_sandbox_result_oom_killed_false_success():
+    from harness.filesystem.sandbox import SandboxResult as FSSandboxResult
+    r = FSSandboxResult(stdout="ok", stderr="", exit_code=0, timed_out=False, execution_time_ms=5.0)
+    assert r.oom_killed is False
+
+
+# ===========================================================================
+# CodeSandbox — OOM detection (exit code 137)
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_code_sandbox_oom_returns_clear_error():
+    from harness.filesystem.sandbox import SandboxResult as FSSandboxResult
+    oom_result = FSSandboxResult(
+        stdout="", stderr="Killed", exit_code=137, timed_out=False, execution_time_ms=100.0
+    )
+    mock_instance = AsyncMock()
+    mock_instance.run_code = AsyncMock(return_value=oom_result)
+    mock_cls = MagicMock(return_value=mock_instance)
+    mock_cls.is_available = AsyncMock(return_value=True)
+
+    with patch("harness.filesystem.sandbox.DockerSandbox", mock_cls):
+        sb = CodeSandbox()
+        result = await sb.execute("x = [0] * 10**9")
+
+    assert result.error == "OOM: container exceeded memory limit"
+    assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_code_sandbox_non_oom_failure_preserves_exit_code_in_error():
+    from harness.filesystem.sandbox import SandboxResult as FSSandboxResult
+    fail_result = FSSandboxResult(
+        stdout="", stderr="NameError: name 'x' is not defined", exit_code=1, timed_out=False,
+        execution_time_ms=50.0
+    )
+    mock_instance = AsyncMock()
+    mock_instance.run_code = AsyncMock(return_value=fail_result)
+    mock_cls = MagicMock(return_value=mock_instance)
+    mock_cls.is_available = AsyncMock(return_value=True)
+
+    with patch("harness.filesystem.sandbox.DockerSandbox", mock_cls):
+        sb = CodeSandbox()
+        result = await sb.execute("print(x)")
+
+    assert result.error is not None
+    assert "exit_code=1" in result.error
+    assert "OOM" not in result.error
+
+
+# ===========================================================================
+# RunCodeTool — OOM detection across all execution paths
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_run_code_tool_subprocess_oom_returns_error(tmp_path):
+    from harness.tools.code_tools import RunCodeTool
+    from harness.core.context import ToolResult
+
+    tool = RunCodeTool()  # no docker_sandbox, no restricted_executor → subprocess path
+    ctx = MagicMock()
+    ctx.run_id = "test-run"
+    ctx.step_count = 1
+    ctx.workspace_path = tmp_path
+
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 137
+    mock_proc.communicate = AsyncMock(return_value=(b"", b"Killed"))
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        result = await tool.execute(ctx, {"code": "x = [0]*10**9"})
+
+    assert result.error == "OOM: container exceeded memory limit"
+    assert result.data is None
+
+
+@pytest.mark.asyncio
+async def test_run_code_tool_subprocess_normal_failure_not_oom(tmp_path):
+    from harness.tools.code_tools import RunCodeTool
+
+    tool = RunCodeTool()
+    ctx = MagicMock()
+    ctx.run_id = "test-run"
+    ctx.step_count = 1
+    ctx.workspace_path = tmp_path
+
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 1
+    mock_proc.communicate = AsyncMock(return_value=(b"", b"ZeroDivisionError"))
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        result = await tool.execute(ctx, {"code": "1/0"})
+
+    # Normal failure — data is returned, error is None (non-zero exits are surfaced in data)
+    assert result.error != "OOM: container exceeded memory limit"
+
+
+@pytest.mark.asyncio
+async def test_run_code_tool_docker_oom_returns_error(tmp_path):
+    from harness.tools.code_tools import RunCodeTool
+
+    mock_docker = MagicMock()
+    mock_docker.run_python = AsyncMock(return_value={
+        "stdout": "", "stderr": "Killed", "exit_code": 137, "timed_out": False
+    })
+    tool = RunCodeTool(docker_sandbox=mock_docker)
+    ctx = MagicMock()
+    ctx.run_id = "test-run"
+    ctx.step_count = 1
+    ctx.workspace_path = tmp_path
+
+    result = await tool.execute(ctx, {"code": "x = [0]*10**9"})
+
+    assert result.error == "OOM: container exceeded memory limit"
+    assert result.data is None
+
+
+# ===========================================================================
 # FailureTaxonomy
 # ===========================================================================
 
