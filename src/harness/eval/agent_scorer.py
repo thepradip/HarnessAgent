@@ -113,6 +113,9 @@ class AgentScores:
     nondeterministic_warning: bool
     verdict: Literal["PASS", "FAIL"]
     failure_analysis: FailureAnalysis | None = None
+    # Harness-level failure class from AgentResult.failure_class (e.g. "TOOL_TIMEOUT").
+    # Populated when the caller passes it through; used by component_attribution().
+    harness_failure_class: str | None = None
 
     CORRECTNESS_THRESHOLD: ClassVar[float] = 0.50
     QUALITY_THRESHOLD: ClassVar[float] = 0.60
@@ -153,6 +156,8 @@ class AgentScores:
             "nondeterministic_warning": self.nondeterministic_warning,
             "verdict": self.verdict,
         }
+        if self.harness_failure_class:
+            d["harness_failure_class"] = self.harness_failure_class
         if self.failure_analysis:
             d["failure"] = {
                 "category": self.failure_analysis.primary.value,

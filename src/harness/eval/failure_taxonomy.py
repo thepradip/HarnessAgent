@@ -117,6 +117,73 @@ _AGGREGATION_WRONG = re.compile(
 )
 
 
+class HarnessComponent(str, Enum):
+    """Which layer of the harness caused an agent failure.
+
+    Used by ``AgentEvalReport.component_attribution()`` to isolate which
+    infrastructure component to tune when failure rates rise — distinct from
+    ``FailureCategory`` which describes the *content* of the failure.
+    """
+    LLM          = "llm"           # model errors: rate limit, timeout, bad output
+    TOOL         = "tool"          # tool errors: not found, schema, exec, timeout
+    SAFETY       = "safety"        # safety blocks: input, step, output guardrails
+    BUDGET       = "budget"        # budget overruns: steps, tokens, wall time
+    HITL         = "hitl"          # human rejection or expired approval
+    VERIFICATION = "verification"  # PEV verifier rejected the output
+    MEMORY       = "memory"        # retrieval / context failures
+    UNKNOWN      = "unknown"       # unclassified
+
+
+_FC_TO_COMPONENT: dict[str, HarnessComponent] = {
+    # Budget
+    "BUDGET_STEPS":       HarnessComponent.BUDGET,
+    "BUDGET_TOKENS":      HarnessComponent.BUDGET,
+    "BUDGET_TIME":        HarnessComponent.BUDGET,
+    # Tool
+    "TOOL_NOT_FOUND":     HarnessComponent.TOOL,
+    "TOOL_SCHEMA_ERROR":  HarnessComponent.TOOL,
+    "TOOL_EXEC_ERROR":    HarnessComponent.TOOL,
+    "TOOL_TIMEOUT":       HarnessComponent.TOOL,
+    # Safety
+    "SAFETY_INPUT":       HarnessComponent.SAFETY,
+    "SAFETY_STEP":        HarnessComponent.SAFETY,
+    "SAFETY_OUTPUT":      HarnessComponent.SAFETY,
+    # LLM
+    "LLM_RATE_LIMIT":     HarnessComponent.LLM,
+    "LLM_TIMEOUT":        HarnessComponent.LLM,
+    "LLM_ERROR":          HarnessComponent.LLM,
+    # HITL
+    "INTER_AGENT_REJECT": HarnessComponent.HITL,
+    # Unknown
+    "UNKNOWN":            HarnessComponent.UNKNOWN,
+}
+
+
+def attribute_to_component(failure_class: str | None) -> HarnessComponent:
+    """Map an ``AgentResult.failure_class`` string to a ``HarnessComponent``.
+
+    Provides a consistent, coarse-grained label for charting which harness
+    layer to investigate when aggregate failure rates rise.
+    """
+    if not failure_class:
+        return HarnessComponent.UNKNOWN
+    fc = failure_class.strip().upper()
+    if fc in _FC_TO_COMPONENT:
+        return _FC_TO_COMPONENT[fc]
+    # Prefix fallback
+    if fc.startswith("BUDGET_"):
+        return HarnessComponent.BUDGET
+    if fc.startswith("TOOL_"):
+        return HarnessComponent.TOOL
+    if fc.startswith("SAFETY_"):
+        return HarnessComponent.SAFETY
+    if fc.startswith("LLM_"):
+        return HarnessComponent.LLM
+    if "MEMORY" in fc or "RETRIEV" in fc:
+        return HarnessComponent.MEMORY
+    return HarnessComponent.UNKNOWN
+
+
 def classify_failure(
     output: str,
     scores: dict[str, float] | None = None,

@@ -285,6 +285,144 @@ class PatchGenerator:
             logger.error("Patch generation failed for agent_type=%s: %s", agent_type, exc)
             return None
 
+    async def generate_retry_patch(
+        self,
+        agent_type: str,
+        errors: list[ErrorRecord],
+        tool_registry: Any | None = None,
+    ) -> Optional[Patch]:
+        """Propose a timeout increase for tools that consistently time out.
+
+        Analyses TOOL_TIMEOUT failures, identifies the most-affected tool,
+        and proposes doubling its ``timeout_seconds`` (capped at 120 s).
+
+        Returns None if there are no timeout errors or the tool cannot be
+        identified from error messages.
+        """
+        timeout_errors = [e for e in errors if "TOOL_TIMEOUT" in e.failure_class]
+        if not timeout_errors:
+            return None
+
+        # Count which tool times out most often
+        tool_counts: dict[str, int] = {}
+        for err in timeout_errors:
+            m = re.search(r"Tool '([^']+)' timed out", err.error_message or "")
+            if m:
+                tool_counts[m.group(1)] = tool_counts.get(m.group(1), 0) + 1
+
+        if not tool_counts:
+            return None
+
+        worst_tool = max(tool_counts, key=lambda k: tool_counts[k])
+        current_timeout = 30.0
+        if tool_registry is not None:
+            try:
+                tool = tool_registry.get(worst_tool)
+                if tool is not None:
+                    current_timeout = float(getattr(tool, "timeout_seconds", 30.0))
+            except Exception:
+                pass
+
+        suggested_timeout = min(current_timeout * 2, 120.0)
+
+        patch = Patch(
+            agent_type=agent_type,
+            target="retry_config",
+            op="set",
+            path=worst_tool,
+            value=str(suggested_timeout),
+            rationale=(
+                f"'{worst_tool}' timed out {tool_counts[worst_tool]} time(s) "
+                f"across {len(timeout_errors)} failures. "
+                f"Proposal: increase timeout_seconds from {current_timeout}s "
+                f"to {suggested_timeout}s."
+            ),
+            proposed_by="hermes",
+            based_on_errors=[e.record_id for e in timeout_errors[:5]],
+        )
+        if self._patch_store is not None:
+            await self._patch_store.save(patch)
+        logger.info(
+            "Generated retry patch %s for agent_type=%s tool=%s (%.0f→%.0f s)",
+            patch.patch_id[:8], agent_type, worst_tool,
+            current_timeout, suggested_timeout,
+        )
+        return patch
+
+    async def generate_permission_patch(
+        self,
+        agent_type: str,
+        errors: list[ErrorRecord],
+    ) -> Optional[Patch]:
+        """Propose a policy update based on recurring safety violations.
+
+        Analyses SAFETY_STEP / SAFETY_OUTPUT failures, identifies the most
+        frequently blocked tool, and proposes adding it to ``blocked_tools``
+        so future HITL gates fire immediately instead of executing and failing.
+
+        Returns None if there are no safety errors.
+        """
+        safety_errors = [
+            e for e in errors
+            if any(fc in e.failure_class for fc in ("SAFETY_", "GUARDRAIL"))
+        ]
+        if not safety_errors:
+            return None
+
+        # Extract which tool was blocked most often
+        tool_counts: dict[str, int] = {}
+        for err in safety_errors:
+            m = re.search(
+                r"Tool '([^']+)' (?:is blocked|blocked by|blocked:)",
+                err.error_message or "",
+            )
+            if m:
+                tool_counts[m.group(1)] = tool_counts.get(m.group(1), 0) + 1
+
+        if tool_counts:
+            most_blocked = max(tool_counts, key=lambda k: tool_counts[k])
+            value = json.dumps({
+                "add_to_blocked_tools": most_blocked,
+                "violation_count": tool_counts[most_blocked],
+                "recommendation": (
+                    f"Add '{most_blocked}' to HarnessPolicy.blocked_tools "
+                    "to prevent repeated safety violations."
+                ),
+            })
+            rationale = (
+                f"'{most_blocked}' was blocked by the safety pipeline "
+                f"{tool_counts[most_blocked]} time(s). "
+                "Adding it to blocked_tools enforces the boundary at the "
+                "policy gate before HITL is triggered."
+            )
+        else:
+            value = json.dumps({
+                "recommendation": "review_tool_permissions",
+                "safety_failure_count": len(safety_errors),
+            })
+            rationale = (
+                f"{len(safety_errors)} safety violation(s) detected. "
+                "Review tool permissions and tighten policy boundaries."
+            )
+
+        patch = Patch(
+            agent_type=agent_type,
+            target="permission",
+            op="set",
+            path="blocked_tools",
+            value=value,
+            rationale=rationale,
+            proposed_by="hermes",
+            based_on_errors=[e.record_id for e in safety_errors[:5]],
+        )
+        if self._patch_store is not None:
+            await self._patch_store.save(patch)
+        logger.info(
+            "Generated permission patch %s for agent_type=%s (%d safety errors)",
+            patch.patch_id[:8], agent_type, len(safety_errors),
+        )
+        return patch
+
     async def generate_tool_patch(
         self,
         agent_type: str,

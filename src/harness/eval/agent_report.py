@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from harness.eval.agent_scorer import AgentScores
-from harness.eval.failure_taxonomy import FailureCategory
+from harness.eval.failure_taxonomy import FailureCategory, attribute_to_component
 
 
 @dataclass
@@ -54,6 +54,21 @@ class AgentEvalReport:
                 dist[key] = dist.get(key, 0) + 1
         return dict(sorted(dist.items(), key=lambda x: -x[1]))
 
+    def component_attribution(self) -> dict[str, int]:
+        """Count FAIL cases per harness component (LLM / TOOL / SAFETY / BUDGET …).
+
+        Uses ``AgentScores.harness_failure_class`` when available, falls back to
+        inferring the component from the content-level ``FailureCategory``.
+        Provides a coarse-grained signal for which infrastructure layer to tune.
+        """
+        dist: dict[str, int] = {}
+        for s in self.scores:
+            if s.verdict != "FAIL":
+                continue
+            comp = attribute_to_component(s.harness_failure_class).value
+            dist[comp] = dist.get(comp, 0) + 1
+        return dict(sorted(dist.items(), key=lambda x: -x[1]))
+
     def to_markdown(self) -> str:
         dims = self.by_dimension()
         hardness = self.by_hardness()
@@ -86,6 +101,20 @@ class AgentEvalReport:
             ]
             for h, rate in hardness.items():
                 lines.append(f"| {h} | {rate:.1%} |")
+            lines.append("")
+
+        attribution = self.component_attribution()
+        if attribution:
+            lines += [
+                "## Harness Component Attribution",
+                "",
+                "| Component | Failures | % of FAILs |",
+                "|-----------|----------|------------|",
+            ]
+            total_fails = sum(attribution.values()) or 1
+            for comp, count in attribution.items():
+                pct = count / total_fails * 100
+                lines.append(f"| `{comp}` | {count} | {pct:.0f}% |")
             lines.append("")
 
         if failures:
@@ -131,6 +160,7 @@ class AgentEvalReport:
             "by_dimension": self.by_dimension(),
             "by_hardness": self.by_hardness(),
             "failure_distribution": self.failure_distribution(),
+            "component_attribution": self.component_attribution(),
             "cases": [json.loads(s.to_json()) for s in self.scores],
         }, indent=2)
 
