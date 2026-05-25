@@ -35,6 +35,14 @@ logger = logging.getLogger(__name__)
 # How often (in steps) to save a checkpoint
 _CHECKPOINT_INTERVAL = 10
 
+# Max times the verifier may inject feedback before accepting the output anyway
+_MAX_VERIFICATION_ATTEMPTS = 3
+
+# Tool names whose results are tracked in ctx.metadata["last_code_result"]
+_CODE_EXEC_RESULT_TOOLS: frozenset[str] = frozenset({
+    "run_python", "run_code", "execute_code", "exec_python",
+})
+
 # Truncate large tool outputs before they enter the LLM context window
 _TOOL_RESULT_MAX_CHARS = 8_000
 
@@ -329,10 +337,30 @@ class BaseAgent:
                         except Exception as exc:
                             logger.debug("Failed to push assistant message to memory: %s", exc)
 
-                    # 3l. If no tool calls, we are done
+                    # 3l. If no tool calls — verify before accepting as done
                     if not response.tool_calls:
                         output = self.extract_final_answer(history)
-                        break
+                        vr = await self._verify_output(ctx, output, history)
+                        if vr.passed:
+                            break
+                        # Verification failed — inject feedback and continue
+                        attempts = ctx.metadata.get("_verification_attempts", 0) + 1
+                        ctx.metadata["_verification_attempts"] = attempts
+                        if attempts >= _MAX_VERIFICATION_ATTEMPTS:
+                            logger.warning(
+                                "Verification failed %d times for run %s — accepting output",
+                                attempts, ctx.run_id,
+                            )
+                            break
+                        history.append({
+                            "role": "user",
+                            "content": (
+                                f"[Verification failed — attempt {attempts}/{_MAX_VERIFICATION_ATTEMPTS}]\n"
+                                f"{vr.feedback}\n"
+                                "Please fix the issue and try again."
+                            ),
+                        })
+                        # Loop continues without break
                     tool_calls_total += len(response.tool_calls)
 
                     # 3m. Execute tool calls — HITL sequential, execution parallel
@@ -420,6 +448,10 @@ class BaseAgent:
                             "error": result.error,
                             "result_preview": str(result.data)[:300] if result.data else "",
                         })
+
+                        # Track last code-execution result for the PEV verifier
+                        if call.name in _CODE_EXEC_RESULT_TOOLS and isinstance(result.data, dict):
+                            ctx.metadata["last_code_result"] = result.data
 
                         # Audit log
                         await self._audit(ctx, call, result)
@@ -866,7 +898,8 @@ class BaseAgent:
 
         # Create approval request
         request = await hitl_manager.request_approval(
-            ctx=ctx,
+            run_id=ctx.run_id,
+            tenant_id=ctx.tenant_id,
             tool_name=call.name,
             tool_args=call.args,
         )
@@ -887,6 +920,34 @@ class BaseAgent:
                 f"HITL approval for '{call.name}' expired",
                 request_id=request.request_id,
             )
+
+    async def _verify_output(
+        self,
+        ctx: AgentContext,
+        output: str,
+        history: list[dict[str, Any]],
+    ) -> Any:
+        """Run the configured verifier against the agent's current output.
+
+        Returns a VerificationResult. If no verifier is configured (or the
+        verifier raises), returns a passing result so the agent always exits
+        cleanly when there is no objective oracle.
+        """
+        from harness.verification.verifier import VerificationResult
+        verifier = ctx.metadata.get("verifier")
+        if verifier is None:
+            return VerificationResult.skipped()
+        try:
+            result = await verifier.verify(ctx, output, history)
+            if not result.passed:
+                logger.info(
+                    "Verification failed for run %s: %s (score=%.2f)",
+                    ctx.run_id[:8], result.verdict, result.score,
+                )
+            return result
+        except Exception as exc:
+            logger.warning("Verifier raised unexpectedly: %s — treating as skipped", exc)
+            return VerificationResult.skipped()
 
     async def _check_policy(self, ctx: AgentContext, call: ToolCall) -> None:
         """Enforce per-tenant policy restrictions before a tool call executes."""

@@ -126,9 +126,15 @@ class HITLManager:
     """Manages HITL approval requests using Redis as persistent storage.
 
     Args:
-        redis:           Async Redis client.
-        ttl_seconds:     Time-to-live for pending requests (default 3600s).
-        event_bus:       Optional EventBus for broadcasting approval events.
+        redis:                  Async Redis client.
+        ttl_seconds:            Time-to-live for pending requests (default 3600s).
+        event_bus:              Optional EventBus for broadcasting approval events.
+        policy_store:           Optional PolicyStore. When provided and
+                                ``learn_from_rejections`` is True, rejected tool
+                                names are automatically added to the tenant's
+                                ``blocked_tools`` list so the same tool is never
+                                auto-approved again.
+        learn_from_rejections:  Persist rejected tool names into HarnessPolicy.
     """
 
     def __init__(
@@ -136,10 +142,14 @@ class HITLManager:
         redis: Any,
         ttl_seconds: int = _DEFAULT_TTL_SECONDS,
         event_bus: Optional[Any] = None,
+        policy_store: Optional[Any] = None,
+        learn_from_rejections: bool = False,
     ) -> None:
         self._redis = redis
         self._ttl = ttl_seconds
         self._event_bus = event_bus
+        self._policy_store = policy_store
+        self._learn_from_rejections = learn_from_rejections
 
     # ------------------------------------------------------------------
     # Create
@@ -254,6 +264,12 @@ class HITLManager:
         await self._remove_from_pending(request_id)
 
         logger.info("Rejected HITL request %s by %s", request_id, resolved_by)
+
+        # Learn from rejection — add tool to tenant's blocked list so it is
+        # never auto-approved again in future runs for this tenant.
+        if self._learn_from_rejections and self._policy_store is not None:
+            await self._block_tool_from_rejection(req)
+
         return req
 
     # ------------------------------------------------------------------
@@ -377,6 +393,30 @@ class HITLManager:
                 "HITL request %s timed out after %.0fs", request_id, timeout
             )
         return "expired"
+
+    async def _block_tool_from_rejection(self, req: ApprovalRequest) -> None:
+        """Persist a rejected tool into the tenant's HarnessPolicy blocked list.
+
+        This closes the HITL feedback loop: a human rejection becomes durable
+        policy so the same tool is never attempted again for this tenant without
+        explicit policy revision.
+        """
+        if not req.tool_name or not req.tenant_id:
+            return
+        try:
+            policy = await self._policy_store.get(req.tenant_id)
+            if req.tool_name not in policy.blocked_tools:
+                policy.blocked_tools = list(policy.blocked_tools) + [req.tool_name]
+                await self._policy_store.set(policy)
+                logger.info(
+                    "HITL learn: added '%s' to blocked_tools for tenant '%s' (request %s)",
+                    req.tool_name, req.tenant_id, req.request_id,
+                )
+        except Exception as exc:
+            logger.warning(
+                "HITL learn: failed to update policy for tenant '%s': %s",
+                req.tenant_id, exc,
+            )
 
     async def _remove_from_pending(self, request_id: str) -> None:
         """No-op if not using a separate pending set."""
