@@ -34,6 +34,7 @@ class Scheduler:
         max_retries: int = 1,
         memory_manager: Any | None = None,
         child_context_budget: int = 8_000,
+        redis: Any | None = None,
     ) -> None:
         """
         Args:
@@ -47,6 +48,10 @@ class Scheduler:
                                    into the parent after completion.
             child_context_budget:  Token budget given to each child agent from the
                                    parent's context (default 8 000 tokens).
+            redis:                 Optional async Redis client.  When provided, the
+                                   Scheduler creates an AgentBlackboard per plan so
+                                   agents can read typed predecessor artifacts instead
+                                   of only receiving text summaries.
         """
         self._runner = agent_runner
         self._message_bus = message_bus
@@ -54,6 +59,7 @@ class Scheduler:
         self._max_retries = max_retries
         self._memory = memory_manager
         self._child_budget = child_context_budget
+        self._redis = redis
 
     async def execute_plan(
         self,
@@ -88,6 +94,13 @@ class Scheduler:
         results: dict[str, Any] = {}
         all_ids = {st.id for st in plan.subtasks}
         semaphore = asyncio.Semaphore(self._max_concurrent)
+
+        # Create a per-plan blackboard when Redis is available
+        blackboard = None
+        if self._redis is not None:
+            from harness.orchestrator.blackboard import AgentBlackboard
+            blackboard = AgentBlackboard(self._redis, plan_id=plan.plan_id)
+            logger.debug("Blackboard created for plan %s", plan.plan_id[:8])
 
         logger.info(
             "Starting plan %s execution: %d tasks, tenant=%s",
@@ -159,7 +172,8 @@ class Scheduler:
                     batch_results = await asyncio.gather(
                         *[
                             self._execute_subtask_with_retry(
-                                st, tenant_id, results, semaphore, parent_run_id
+                                st, tenant_id, results, semaphore, parent_run_id,
+                                blackboard=blackboard,
                             )
                             for st in ready
                         ],
@@ -175,7 +189,7 @@ class Scheduler:
                                 result,
                             )
                             from harness.core.context import AgentResult
-                            results[st.id] = AgentResult(
+                            agent_result = AgentResult(
                                 run_id=f"failed_{st.id}",
                                 output="",
                                 steps=0,
@@ -184,11 +198,22 @@ class Scheduler:
                                 failure_class="UNKNOWN",
                                 error_message=str(result),
                             )
+                            results[st.id] = agent_result
                             failed_ids.add(st.id)
+                            if blackboard is not None:
+                                await blackboard.write(
+                                    st.id, "error", str(result),
+                                    metadata={"success": False},
+                                )
                         else:
                             results[st.id] = result
                             if not getattr(result, "success", True):
                                 failed_ids.add(st.id)
+                            # Write structured artifacts to blackboard for downstream agents
+                            if blackboard is not None:
+                                await _write_result_to_blackboard(
+                                    blackboard, st.id, result
+                                )
 
                         completed_ids.add(st.id)
                         await self._publish(
@@ -233,6 +258,7 @@ class Scheduler:
         predecessor_results: dict[str, Any],
         semaphore: asyncio.Semaphore,
         parent_run_id: str | None = None,
+        blackboard: Any | None = None,
     ) -> Any:
         """Execute a subtask with back-pressure and retry on failure."""
         last_exc: Exception | None = None
@@ -240,7 +266,8 @@ class Scheduler:
             async with semaphore:
                 try:
                     result = await self._execute_subtask(
-                        subtask, tenant_id, predecessor_results, parent_run_id
+                        subtask, tenant_id, predecessor_results, parent_run_id,
+                        blackboard=blackboard,
                     )
                     if getattr(result, "success", True):
                         return result
@@ -280,6 +307,7 @@ class Scheduler:
         tenant_id: str,
         predecessor_results: dict[str, Any],
         parent_run_id: str | None = None,
+        blackboard: Any | None = None,
     ) -> Any:
         """Execute a single SubTask, enriching its context with predecessor outputs.
 
@@ -301,11 +329,24 @@ class Scheduler:
         # Build enriched task description with predecessor outputs
         task_with_context = _build_task_with_context(subtask, predecessor_results)
 
+        # Append structured blackboard artifacts from direct predecessors
+        if blackboard is not None and subtask.depends_on:
+            try:
+                bb_context = await blackboard.format_for_context(
+                    subtask_ids=subtask.depends_on,
+                )
+                if bb_context:
+                    task_with_context = f"{task_with_context}\n\n{bb_context}"
+            except Exception as exc:
+                logger.debug("Blackboard context read failed (non-fatal): %s", exc)
+
         # Build metadata for this run
         metadata: dict[str, Any] = dict(subtask.metadata)
         metadata["plan_subtask_id"] = subtask.id
         metadata["depends_on"] = subtask.depends_on
         metadata["handoff_count"] = len(subtask.depends_on)
+        if blackboard is not None:
+            metadata["blackboard"] = blackboard
 
         # Include predecessor result summaries
         for dep_id in subtask.depends_on:
@@ -439,6 +480,40 @@ def _build_task_with_context(
         task = f"{task}\n\nContext from prerequisite tasks:\n{context_str}"
 
     return task
+
+
+async def _write_result_to_blackboard(
+    blackboard: Any,
+    subtask_id: str,
+    result: Any,
+) -> None:
+    """Write an AgentResult to the blackboard after a subtask completes.
+
+    Stores the primary output as TYPE_OUTPUT plus any typed artifacts the
+    agent embedded in its metadata (code, sql, test_result, file_list).
+    Failures are logged and swallowed — the main execution must never stall.
+    """
+    output = getattr(result, "output", "") or ""
+    success = getattr(result, "success", False)
+    try:
+        await blackboard.write(
+            subtask_id,
+            "output",
+            output,
+            metadata={
+                "success": success,
+                "steps": getattr(result, "steps", 0),
+                "cost_usd": getattr(result, "cost_usd", 0.0),
+            },
+        )
+        # Extract typed artifacts from result metadata when present
+        meta = getattr(result, "metadata", {}) or {}
+        for artifact_type in ("code", "sql", "test_result", "file_list", "analysis"):
+            artifact = meta.get(f"blackboard_{artifact_type}")
+            if artifact:
+                await blackboard.write(subtask_id, artifact_type, str(artifact))
+    except Exception as exc:
+        logger.debug("_write_result_to_blackboard failed: %s", exc)
 
 
 def _summarise_result(result: Any, max_chars: int = 2000) -> str:
