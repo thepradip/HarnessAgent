@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "agent-haas"
-version = "0.3.1"
+version = "0.3.2"
 description = "Harness as a Service — production-grade multi-agent harness with LLM routing, paged context, hierarchical tracing, safety, and self-improvement"
 authors = ["thepradip <pradiptivhale@gmail.com>"]
 license = "MIT"
