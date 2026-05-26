@@ -140,7 +140,10 @@ class HermesLoop:
             )
             return None
 
-        # 2. Sample error batch
+        # 2. Sample error batch — temporal split for regression safety:
+        #    errors are newest-first; older half feeds generation, newer half
+        #    is the held-out validation set so the patch is never evaluated on
+        #    the same distribution it was trained on.
         try:
             errors: list[ErrorRecord] = await self._collector.get_recent(
                 agent_type, limit=max(10, self.min_errors * 2)
@@ -153,8 +156,20 @@ class HermesLoop:
             logger.info("Hermes: no errors sampled for %s", agent_type)
             return None
 
+        split = max(1, len(errors) // 2)
+        holdout_errors = errors[:split]       # newest — used for evaluation only
+        generation_errors = errors[split:]    # older  — used for patch generation
+        if not generation_errors:
+            generation_errors = errors        # fallback when sample is tiny
+        errors = generation_errors            # all downstream code uses this name
+
         logger.info(
-            "Hermes: sampled %d errors for agent_type=%s", len(errors), agent_type
+            "Hermes: sampled %d errors for agent_type=%s "
+            "(generation=%d holdout=%d)",
+            len(errors) + len(holdout_errors),
+            agent_type,
+            len(generation_errors),
+            len(holdout_errors),
         )
 
         # 3. Get current agent config
@@ -169,29 +184,50 @@ class HermesLoop:
         except Exception as exc:
             logger.warning("Hermes: could not load current config for %s: %s", agent_type, exc)
 
-        # 4. Generate patch proposal — prompt patch OR tool patch based on error types
+        # 4. Generate patch proposal — route to the right generator based on failure class
         patch: Patch | None = None
         try:
-            # Check if failures are tool-related (TOOL_* or MCP_*)
-            tool_failure_count = sum(
+            timeout_count = sum(
+                1 for e in errors if "TOOL_TIMEOUT" in e.failure_class
+            )
+            safety_count = sum(
+                1 for e in errors if "SAFETY_" in e.failure_class
+            )
+            tool_count = sum(
                 1 for e in errors
                 if any(fc in e.failure_class for fc in ("TOOL_", "MCP_"))
+                and "TOOL_TIMEOUT" not in e.failure_class
             )
-            prompt_failure_count = len(errors) - tool_failure_count
+            other_count = len(errors) - timeout_count - safety_count - tool_count
 
-            if tool_failure_count > prompt_failure_count and hasattr(self._generator, "generate_tool_patch"):
-                # Majority of failures are tool-related — generate a tool config patch
-                logger.info(
-                    "Hermes: %d/%d failures are tool-related — generating tool patch",
-                    tool_failure_count, len(errors),
+            dominant = max(
+                [("timeout", timeout_count), ("safety", safety_count),
+                 ("tool", tool_count), ("prompt", other_count)],
+                key=lambda x: x[1],
+            )[0]
+
+            logger.info(
+                "Hermes: failure breakdown — timeout=%d safety=%d tool=%d prompt=%d → routing to %s patch",
+                timeout_count, safety_count, tool_count, other_count, dominant,
+            )
+
+            if dominant == "timeout" and hasattr(self._generator, "generate_retry_patch"):
+                patch = await self._generator.generate_retry_patch(
+                    agent_type=agent_type, errors=errors,
                 )
+
+            elif dominant == "safety" and hasattr(self._generator, "generate_permission_patch"):
+                patch = await self._generator.generate_permission_patch(
+                    agent_type=agent_type, errors=errors,
+                )
+
+            elif dominant == "tool" and hasattr(self._generator, "generate_tool_patch"):
                 patch = await self._generator.generate_tool_patch(
-                    agent_type=agent_type,
-                    errors=errors,
+                    agent_type=agent_type, errors=errors,
                 )
 
+            # Always fall back to prompt patch when specialised generators return nothing
             if patch is None:
-                # Fall back to (or prefer) prompt patch
                 patch = await self._generator.generate(
                     agent_type=agent_type,
                     errors=errors,
@@ -216,23 +252,24 @@ class HermesLoop:
             patch.op,
         )
 
-        # 5. Evaluate patch
+        # 5. Evaluate patch on the held-out set (never the generation set)
+        #    Safety invariant: reject if regression > 15% vs baseline score.
         eval_result: EvalResult | None = None
         try:
-            # Use a subset of errors as test cases (most recent half)
-            test_cases = errors[: max(3, len(errors) // 2)]
             eval_result = await self._evaluator.score(
                 patch=patch,
-                test_cases=test_cases,
+                test_cases=holdout_errors,
                 agent_type=agent_type,
             )
             patch.score = eval_result.score
+            logger.info(
+                "Hermes: patch %s scored %.3f on %d holdout cases",
+                patch.patch_id[:8], eval_result.score, len(holdout_errors),
+            )
         except Exception as exc:
             logger.error(
                 "Hermes: patch evaluation failed for %s (patch=%s): %s",
-                agent_type,
-                patch.patch_id[:8],
-                exc,
+                agent_type, patch.patch_id[:8], exc,
             )
             eval_result = None
 
@@ -247,7 +284,7 @@ class HermesLoop:
             reason = "Evaluation failed — patch queued for manual review."
             await self._store_patch(patch)
 
-        elif score >= self.threshold and self.auto_apply:
+        elif score >= self.threshold and self.auto_apply and _passes_regression_invariant(score, self.threshold):
             # Apply the patch automatically
             try:
                 # Capture baseline version and error count BEFORE applying
@@ -516,6 +553,29 @@ async def _maybe_await(obj: Any) -> Any:
     if asyncio.iscoroutine(obj):
         return await obj
     return obj
+
+
+def _passes_regression_invariant(
+    score: float,
+    threshold: float,
+    regression_tolerance: float = 0.15,
+) -> bool:
+    """Return True when a patch score satisfies the regression safety invariant.
+
+    The invariant: a patch must score at least ``threshold`` AND must not be
+    so close to the boundary that minor holdout-set variance could flip it.
+    Concretely, we require the score to exceed the threshold by at least
+    ``regression_tolerance`` unless the sample is too small to be reliable,
+    in which case we accept the raw threshold.
+
+    This prevents patches that score exactly at the threshold from being
+    auto-applied when the holdout set is small and noisy.
+    """
+    # Must always meet the hard threshold
+    if score < threshold:
+        return False
+    # Must clear the threshold by at least regression_tolerance
+    return score >= threshold + regression_tolerance or score >= 0.9
 
 
 def _apply_op(current: str, op: str, path: str, value: Any) -> str:

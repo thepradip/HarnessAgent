@@ -573,6 +573,9 @@ class BaseAgent:
                     except Exception as exc:
                         logger.debug("online_monitor.record_run failed: %s", exc)
 
+                # Auto-capture reusable skills from high-scoring successful runs
+                await self._maybe_capture_skill(ctx, output, total_cost_usd)
+
                 # Log run completion locally
                 elapsed = time.monotonic() - run_start
                 _append_run_log(ctx.run_id, {
@@ -1122,6 +1125,56 @@ class BaseAgent:
         except Exception as exc:
             logger.debug("_retrieve_skills failed: %s", exc)
             return ""
+
+    async def _maybe_capture_skill(
+        self,
+        ctx: AgentContext,
+        output: str,
+        cost_usd: float,
+    ) -> None:
+        """Auto-capture a skill from a successful high-scoring run.
+
+        Triggered when all of these are true:
+        - Run succeeded (not ctx.failed)
+        - ``ctx.metadata["skill_capture"]`` is a configured SkillCapture instance
+        - ``ctx.metadata["skill_score"]`` (float 0–1) meets the capture threshold
+
+        Callers set ``ctx.metadata["skill_score"]`` from their RLVR verifier,
+        eval scorer, or a static value. If not set, defaults to 0.0 (skipped).
+        """
+        if ctx.failed or not output:
+            return
+        capture = ctx.metadata.get("skill_capture")
+        if capture is None:
+            return
+        score = float(ctx.metadata.get("skill_score", 0.0))
+        try:
+            from harness.tools.skill_store import SkillType
+            title = ctx.metadata.get("skill_title") or f"{self.agent_type}: {ctx.task[:60]}"
+            description = ctx.metadata.get("skill_description") or ctx.task
+            skill_type_str = ctx.metadata.get("skill_type", "output")
+            try:
+                skill_type = SkillType(skill_type_str)
+            except ValueError:
+                skill_type = SkillType.CODE  # safe default
+
+            saved = await capture.capture(
+                title=title,
+                description=description,
+                content=output,
+                skill_type=skill_type,
+                tenant_id=ctx.tenant_id,
+                score=score,
+                run_id=ctx.run_id,
+                metadata={"cost_usd": cost_usd, "steps": ctx.step_count},
+            )
+            if saved:
+                logger.info(
+                    "Skill captured: run=%s score=%.2f title=%r",
+                    ctx.run_id[:8], score, title,
+                )
+        except Exception as exc:
+            logger.debug("_maybe_capture_skill failed (non-fatal): %s", exc)
 
     async def _start_docker_session(self, ctx: AgentContext) -> None:
         """Start a persistent sandbox container for this run if configured.

@@ -179,6 +179,12 @@ class FastEmbedEmbedder:
 
     @property
     def dimensions(self) -> int:
+        """Return embedding dimensions. Raises before first embed() call —
+        same contract as SentenceTransformerEmbedder."""
+        if self._model is None:
+            raise RuntimeError(
+                "FastEmbedEmbedder model not loaded yet — call embed() first."
+            )
         return self._dims
 
     async def embed(self, texts: list[str]) -> list[list[float]]:

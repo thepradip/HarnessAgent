@@ -144,12 +144,14 @@ class HITLManager:
         event_bus: Optional[Any] = None,
         policy_store: Optional[Any] = None,
         learn_from_rejections: bool = False,
+        memory_manager: Optional[Any] = None,
     ) -> None:
         self._redis = redis
         self._ttl = ttl_seconds
         self._event_bus = event_bus
         self._policy_store = policy_store
         self._learn_from_rejections = learn_from_rejections
+        self._memory_manager = memory_manager
 
     # ------------------------------------------------------------------
     # Create
@@ -229,6 +231,7 @@ class HITLManager:
         await self._remove_from_pending(request_id)
 
         logger.info("Approved HITL request %s by %s", request_id, resolved_by)
+        await self._update_memory_from_decision(req, "approved", self._memory_manager)
         return req
 
     async def reject(
@@ -269,6 +272,9 @@ class HITLManager:
         # never auto-approved again in future runs for this tenant.
         if self._learn_from_rejections and self._policy_store is not None:
             await self._block_tool_from_rejection(req)
+
+        # Persist rejection into memory so agent retrieves it as future context
+        await self._update_memory_from_decision(req, "rejected", self._memory_manager)
 
         return req
 
@@ -393,6 +399,40 @@ class HITLManager:
                 "HITL request %s timed out after %.0fs", request_id, timeout
             )
         return "expired"
+
+    async def _update_memory_from_decision(
+        self,
+        req: ApprovalRequest,
+        decision: str,
+        memory_manager: Optional[Any] = None,
+    ) -> None:
+        """Persist the HITL decision into memory so future retrievals surface it.
+
+        Approved tools build confidence; rejected tools become warnings that
+        surface as context before the agent attempts the same action again.
+        This closes the loop described in §5.2.5 of arXiv:2605.18747.
+        """
+        if memory_manager is None:
+            return
+        try:
+            verb = "approved" if decision == "approved" else "rejected"
+            content = (
+                f"HITL {verb}: tool='{req.tool_name}' "
+                f"args={req.tool_args} reason='{req.reason}' "
+                f"resolved_by='{req.resolved_by}'"
+            )
+            await memory_manager.remember(
+                text=content,
+                metadata={
+                    "hitl_decision": decision,
+                    "tool_name": req.tool_name,
+                    "run_id": req.run_id,
+                    "request_id": req.request_id,
+                },
+                tenant_id=req.tenant_id,
+            )
+        except Exception as exc:
+            logger.debug("_update_memory_from_decision failed: %s", exc)
 
     async def _block_tool_from_rejection(self, req: ApprovalRequest) -> None:
         """Persist a rejected tool into the tenant's HarnessPolicy blocked list.

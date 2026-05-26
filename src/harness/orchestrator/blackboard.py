@@ -145,6 +145,25 @@ class AgentBlackboard:
         score = entry.written_at.timestamp()
 
         try:
+            # Detect conflict: another entry already exists for this key
+            existing_raw = await self._redis.get(artifact_key)
+            if existing_raw is not None:
+                try:
+                    existing = json.loads(
+                        existing_raw if isinstance(existing_raw, str) else existing_raw.decode()
+                    )
+                    prev_agent = existing.get("metadata", {}).get("written_by", subtask_id)
+                    logger.debug(
+                        "Blackboard conflict: plan=%s key=%s:%s — "
+                        "previous write by '%s' overwritten (last-write-wins)",
+                        self._plan_id[:8], artifact_type, subtask_id, prev_agent,
+                    )
+                except Exception:
+                    pass
+
+            # Embed writer identity in metadata for audit
+            entry.metadata.setdefault("written_by", subtask_id)
+
             await self._redis.setex(
                 artifact_key,
                 self._ttl,

@@ -141,9 +141,13 @@ class RunCodeTool:
         self, ctx: AgentContext, code: str, timeout: float
     ) -> dict[str, Any]:
         """Execute code via RestrictedPythonExecutor."""
-        return await self._restricted_executor.execute(
-            code=code, timeout=timeout, context={"run_id": ctx.run_id}
-        )
+        res = await self._restricted_executor.run_code(code)
+        return {
+            "stdout": res.stdout,
+            "stderr": res.stderr,
+            "exit_code": res.exit_code,
+            "timed_out": res.timed_out,
+        }
 
     async def _run_subprocess(
         self, ctx: AgentContext, code: str, timeout: float
