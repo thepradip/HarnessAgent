@@ -6,14 +6,10 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
-import anthropic
-from anthropic import (
-    APIConnectionError,
-    APIStatusError,
-    APITimeoutError,
-    AsyncAnthropic,
-    RateLimitError as AnthropicRateLimitError,
-)
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from anthropic import AsyncAnthropic
 
 from harness.core.context import LLMResponse, ToolCall
 from harness.core.errors import FailureClass, LLMError
@@ -34,11 +30,43 @@ class AnthropicProvider:
         timeout: float = 120.0,
     ) -> None:
         self.model = model
+        self._api_key = api_key
+        self._max_retries = max_retries
+        self._timeout = timeout
+        self._client: Any = None          # loaded on first call
+        # Exception classes cached after first load — used in error handlers
+        self._exc_rate_limit: Any = None
+        self._exc_timeout: Any = None
+        self._exc_connection: Any = None
+        self._exc_status: Any = None
+
+    def _ensure_client(self) -> None:
+        """Lazy-load the Anthropic SDK on first use."""
+        if self._client is not None:
+            return
+        try:
+            from anthropic import (
+                APIConnectionError,
+                APIStatusError,
+                APITimeoutError,
+                AsyncAnthropic,
+                RateLimitError as AnthropicRateLimitError,
+            )
+        except ImportError as exc:
+            raise ImportError(
+                "anthropic package is required for AnthropicProvider.\n"
+                "Install: pip install anthropic\n"
+                "     or: pip install agent-haas[anthropic]"
+            ) from exc
         self._client = AsyncAnthropic(
-            api_key=api_key,
-            max_retries=max_retries,
-            timeout=timeout,
+            api_key=self._api_key,
+            max_retries=self._max_retries,
+            timeout=self._timeout,
         )
+        self._exc_rate_limit = AnthropicRateLimitError
+        self._exc_timeout = APITimeoutError
+        self._exc_connection = APIConnectionError
+        self._exc_status = APIStatusError
 
     def _build_system_block(self, system: str) -> list[dict[str, Any]]:
         """Build a system block with ephemeral cache_control for prompt caching."""
@@ -115,9 +143,15 @@ class AnthropicProvider:
         if tools:
             build_kwargs["tools"] = self._build_tools(tools)
 
+        self._ensure_client()
+        RateLimitError = self._exc_rate_limit
+        APITimeoutError = self._exc_timeout
+        APIConnectionError = self._exc_connection
+        APIStatusError = self._exc_status
+
         try:
             response = await self._client.messages.create(**build_kwargs, **kwargs)
-        except AnthropicRateLimitError as exc:
+        except RateLimitError as exc:
             raise LLMError(
                 f"Anthropic rate limit: {exc}",
                 failure_class=FailureClass.LLM_RATE_LIMIT,
@@ -203,11 +237,16 @@ class AnthropicProvider:
         if system:
             build_kwargs["system"] = self._build_system_block(system)
 
+        self._ensure_client()
+        RateLimitError = self._exc_rate_limit
+        APITimeoutError = self._exc_timeout
+        APIStatusError = self._exc_status
+
         try:
             async with self._client.messages.stream(**build_kwargs, **kwargs) as stream:
                 async for text in stream.text_stream:
                     yield text
-        except AnthropicRateLimitError as exc:
+        except RateLimitError as exc:
             raise LLMError(
                 f"Anthropic rate limit during stream: {exc}",
                 failure_class=FailureClass.LLM_RATE_LIMIT,
@@ -225,6 +264,8 @@ class AnthropicProvider:
 
     async def health_check(self) -> bool:
         """Return True if the Anthropic API is reachable."""
+        self._ensure_client()
+        RateLimitError = self._exc_rate_limit
         try:
             await self._client.messages.create(
                 model=self.model,
@@ -232,9 +273,8 @@ class AnthropicProvider:
                 messages=[{"role": "user", "content": "ping"}],
             )
             return True
-        except AnthropicRateLimitError:
-            # Rate limited but the API is up
-            return True
+        except RateLimitError:
+            return True  # rate-limited but the API is up
         except Exception as exc:
             logger.warning("Anthropic health check failed: %s", exc)
             return False

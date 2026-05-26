@@ -29,89 +29,126 @@ classifiers = [
 ]
 
 # ---------------------------------------------------------------------------
-# Core — minimal install: API server, LLM routing, Redis, basic storage, auth
-# pip install llm-harness
+# Core — truly minimal: agent loop, tool registry, safety, config, Redis state
+# pip install agent-haas   → ~50 MB
 # ---------------------------------------------------------------------------
 [tool.poetry.dependencies]
-python          = "^3.11"
-fastapi         = ">=0.115.0"
-uvicorn         = {extras = ["standard"], version = ">=0.30.0"}
-pydantic        = ">=2.9.0"
+python            = "^3.11"
+pydantic          = ">=2.9.0"
 pydantic-settings = ">=2.6.0"
-httpx           = ">=0.28.0"
-anthropic       = ">=0.40.0"
-openai          = ">=1.50.0"
-tiktoken        = ">=0.8.0"
-redis           = ">=5.2.0"
-sqlalchemy      = {extras = ["asyncio"], version = ">=2.0.0"}
-aiosqlite       = ">=0.20.0"
-networkx        = ">=3.3"
-jsonschema      = ">=4.23.0"
-structlog       = ">=24.4.0"
-aiofiles        = ">=24.1.0"
-python-multipart = ">=0.0.12"
-sse-starlette   = ">=2.1.0"
-apscheduler     = ">=3.10.0"
-rq              = ">=2.0.0"
-python-jose     = {extras = ["cryptography"], version = ">=3.3.0"}
-passlib         = {extras = ["bcrypt"], version = ">=1.7.4"}
+httpx             = ">=0.28.0"
+redis             = ">=5.2.0"
+networkx          = ">=3.3"
+jsonschema        = ">=4.23.0"
+structlog         = ">=24.4.0"
+aiofiles          = ">=24.1.0"
 
 # ---------------------------------------------------------------------------
-# Extras — install only what you need
+# Optional extras — pip install agent-haas[extra1,extra2]
 # ---------------------------------------------------------------------------
 
-# Vector memory backends
-# pip install llm-harness[vector]
-chromadb            = {version = ">=0.5.0",  optional = true}
-qdrant-client       = {version = ">=1.11.0", optional = true}
-weaviate-client     = {version = ">=4.9.0",  optional = true}
+# LLM providers — pick the one(s) you use
+# pip install agent-haas[anthropic]
+anthropic = {version = ">=0.40.0", optional = true}
+
+# pip install agent-haas[openai]
+openai   = {version = ">=1.50.0", optional = true}
+tiktoken = {version = ">=0.8.0",  optional = true}
+
+# REST API server (FastAPI + auth + SSE)
+# pip install agent-haas[api]
+fastapi          = {version = ">=0.115.0", optional = true}
+uvicorn          = {extras = ["standard"], version = ">=0.30.0", optional = true}
+python-multipart = {version = ">=0.0.12", optional = true}
+sse-starlette    = {version = ">=2.1.0",  optional = true}
+python-jose      = {extras = ["cryptography"], version = ">=3.3.0", optional = true}
+passlib          = {extras = ["bcrypt"],       version = ">=1.7.4", optional = true}
+
+# Background workers (Hermes scheduler, RQ task queue)
+# pip install agent-haas[workers]
+apscheduler = {version = ">=3.10.0", optional = true}
+rq          = {version = ">=2.0.0",  optional = true}
+
+# SQL persistence (SQLAgent, run store)
+# pip install agent-haas[sql]
+sqlalchemy  = {extras = ["asyncio"], version = ">=2.0.0", optional = true}
+aiosqlite   = {version = ">=0.20.0", optional = true}
+asyncpg     = {version = ">=0.30.0", optional = true}
+sqlglot     = {version = ">=20.0.0", optional = true}
+
+# Vector memory — fastembed uses ONNX (~100 MB), NO PyTorch dependency
+# pip install agent-haas[vector]
+fastembed       = {version = ">=0.3.0",  optional = true}
+chromadb        = {version = ">=0.5.0",  optional = true}
+qdrant-client   = {version = ">=1.11.0", optional = true}
+weaviate-client = {version = ">=4.9.0",  optional = true}
+
+# Full embeddings with sentence-transformers + PyTorch (~1.5 GB) — explicit opt-in
+# pip install agent-haas[embed-full]
 sentence-transformers = {version = ">=3.3.0", optional = true}
 
-# Graph memory backend (Neo4j — networkx is already in core)
-# pip install llm-harness[graph]
+# Graph memory backend
+# pip install agent-haas[graph]
 neo4j = {version = ">=5.27.0", optional = true}
 
-# Observability: MLflow traces, OpenTelemetry spans, Prometheus metrics
-# pip install llm-harness[observe]
-mlflow                        = {version = ">=2.18.0", optional = true}
-opentelemetry-api             = {version = ">=1.27.0", optional = true}
-opentelemetry-sdk             = {version = ">=1.27.0", optional = true}
-opentelemetry-exporter-otlp   = {version = ">=1.27.0", optional = true}
-prometheus-client             = {version = ">=0.21.0", optional = true}
+# Observability
+# pip install agent-haas[observe]
+mlflow                      = {version = ">=2.18.0", optional = true}
+opentelemetry-api           = {version = ">=1.27.0", optional = true}
+opentelemetry-sdk           = {version = ">=1.27.0", optional = true}
+opentelemetry-exporter-otlp = {version = ">=1.27.0", optional = true}
+prometheus-client           = {version = ">=0.21.0", optional = true}
 
-# Document ingestion: PDF, HTML, DOCX
-# pip install llm-harness[ingestion]
-pymupdf      = {version = ">=1.24.0", optional = true}
-trafilatura  = {version = ">=1.12.0", optional = true}
-python-docx  = {version = ">=1.1.0",  optional = true}
-
-# SQL agent: async PostgreSQL driver + SQL parser
-# pip install llm-harness[sql]
-asyncpg = {version = ">=0.30.0", optional = true}
-sqlglot = {version = ">=20.0.0", optional = true}
+# Document ingestion
+# pip install agent-haas[ingestion]
+pymupdf     = {version = ">=1.24.0", optional = true}
+trafilatura = {version = ">=1.12.0", optional = true}
+python-docx = {version = ">=1.1.0",  optional = true}
 
 # MCP server integration
-# pip install llm-harness[mcp]
+# pip install agent-haas[mcp]
 mcp = {version = ">=1.2.0", optional = true}
 
-# Structured LLM output (instructor)
-# pip install llm-harness[structured]
+# Structured LLM output
+# pip install agent-haas[structured]
 instructor = {version = ">=1.6.0", optional = true}
 
 [tool.poetry.extras]
-vector     = ["chromadb", "qdrant-client", "weaviate-client", "sentence-transformers"]
+# Single-purpose extras
+anthropic  = ["anthropic"]
+openai     = ["openai", "tiktoken"]
+api        = ["fastapi", "uvicorn", "python-multipart", "sse-starlette", "python-jose", "passlib"]
+workers    = ["apscheduler", "rq"]
+sql        = ["sqlalchemy", "aiosqlite", "asyncpg", "sqlglot"]
+vector     = ["fastembed", "chromadb", "qdrant-client", "weaviate-client"]
+embed-full = ["sentence-transformers"]
 graph      = ["neo4j"]
 observe    = ["mlflow", "opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp", "prometheus-client"]
 ingestion  = ["pymupdf", "trafilatura", "python-docx"]
-sql        = ["asyncpg", "sqlglot"]
 mcp        = ["mcp"]
 structured = ["instructor"]
-all        = [
-    "chromadb", "qdrant-client", "weaviate-client", "sentence-transformers",
+
+# Convenience bundles
+# Good default for most users (~300 MB, no torch)
+recommended = [
+    "anthropic", "openai", "tiktoken",
+    "fastapi", "uvicorn", "python-multipart", "sse-starlette", "python-jose", "passlib",
+    "apscheduler", "rq",
+    "sqlalchemy", "aiosqlite",
+    "fastembed", "chromadb",
+    "mlflow", "prometheus-client",
+]
+
+# Everything except torch (~500 MB)
+all = [
+    "anthropic", "openai", "tiktoken",
+    "fastapi", "uvicorn", "python-multipart", "sse-starlette", "python-jose", "passlib",
+    "apscheduler", "rq",
+    "sqlalchemy", "aiosqlite", "asyncpg", "sqlglot",
+    "fastembed", "chromadb", "qdrant-client", "weaviate-client",
     "neo4j",
     "mlflow", "opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp", "prometheus-client",
     "pymupdf", "trafilatura", "python-docx",
-    "asyncpg", "sqlglot",
     "mcp",
     "instructor",
 ]

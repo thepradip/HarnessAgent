@@ -38,14 +38,32 @@ def _make_response(content="Hello", tool_calls=None, cached=0):
     return resp
 
 
+def _seed_mock_client(p: OpenAIProvider) -> MagicMock:
+    """Pre-seed a mock AsyncOpenAI client so tests can patch it directly."""
+    mock_client = MagicMock()
+    p._client = mock_client
+    # Seed exception classes (lazy-loaded in production, needed by error handlers)
+    from openai import APIConnectionError, APIStatusError, APITimeoutError
+    from openai import RateLimitError as OpenAIRateLimitError
+    p._exc_rate_limit = OpenAIRateLimitError
+    p._exc_timeout = APITimeoutError
+    p._exc_connection = APIConnectionError
+    p._exc_status = APIStatusError
+    return mock_client
+
+
 @pytest.fixture
 def provider():
-    return OpenAIProvider(api_key="sk-test", model="gpt-4o-mini")
+    p = OpenAIProvider(api_key="sk-test", model="gpt-4o-mini")
+    _seed_mock_client(p)
+    return p
 
 
 @pytest.fixture
 def o1_provider():
-    return OpenAIProvider(api_key="sk-test", model="o1-mini")
+    p = OpenAIProvider(api_key="sk-test", model="o1-mini")
+    _seed_mock_client(p)
+    return p
 
 
 @pytest.mark.asyncio

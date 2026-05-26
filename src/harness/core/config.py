@@ -41,7 +41,9 @@ class Settings(BaseSettings):
     chroma_path: str = "/data/chroma"
     qdrant_url: str = "http://localhost:6333"
     weaviate_url: str = "http://localhost:8080"
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    # fastembed (default, ONNX ~100 MB) | sentence-transformers (torch ~1.5 GB)
+    embedding_backend: str = "fastembed"
 
     # -------------------------------------------------------------------------
     # Graph Store

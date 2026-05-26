@@ -16,9 +16,10 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
-from openai import AsyncOpenAI
-from openai import APIConnectionError, APIStatusError, APITimeoutError
-from openai import RateLimitError as OpenAIRateLimitError
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from openai import AsyncOpenAI
 
 from harness.core.context import LLMResponse, ToolCall
 from harness.core.errors import FailureClass, LLMError
@@ -60,24 +61,51 @@ class OpenAIProvider:
         api_key: str,
         model: str = "gpt-4o-mini",
         timeout: float = 120.0,
-        max_retries: int = 0,       # retry handled by LLMRouter
+        max_retries: int = 0,
         organization: str | None = None,
-        base_url: str | None = None, # override for Azure or proxy
+        base_url: str | None = None,
     ) -> None:
         self.model = model
-        self._client = AsyncOpenAI(
-            api_key=api_key,
-            timeout=timeout,
-            max_retries=max_retries,
-            organization=organization,
-            **({"base_url": base_url} if base_url else {}),
-        )
-        # A model is a "reasoning" model if it is in the known set, matches a
-        # known prefix, or the caller explicitly flags it with use_completion_tokens.
+        self._api_key = api_key
+        self._timeout = timeout
+        self._max_retries = max_retries
+        self._organization = organization
+        self._base_url = base_url
+        self._client: Any = None          # loaded on first call
+        self._exc_rate_limit: Any = None
+        self._exc_timeout: Any = None
+        self._exc_connection: Any = None
+        self._exc_status: Any = None
         self._is_reasoning = (
             model in _REASONING_MODELS
             or any(model.startswith(p) for p in _REASONING_PREFIXES)
         )
+
+    def _ensure_client(self) -> None:
+        """Lazy-load the OpenAI SDK on first use."""
+        if self._client is not None:
+            return
+        try:
+            from openai import AsyncOpenAI
+            from openai import APIConnectionError, APIStatusError, APITimeoutError
+            from openai import RateLimitError as OpenAIRateLimitError
+        except ImportError as exc:
+            raise ImportError(
+                "openai package is required for OpenAIProvider.\n"
+                "Install: pip install openai\n"
+                "     or: pip install agent-haas[openai]"
+            ) from exc
+        self._client = AsyncOpenAI(
+            api_key=self._api_key,
+            timeout=self._timeout,
+            max_retries=self._max_retries,
+            organization=self._organization,
+            **({"base_url": self._base_url} if self._base_url else {}),
+        )
+        self._exc_rate_limit = OpenAIRateLimitError
+        self._exc_timeout = APITimeoutError
+        self._exc_connection = APIConnectionError
+        self._exc_status = APIStatusError
 
     # ------------------------------------------------------------------
     # LLMProvider protocol
@@ -113,9 +141,15 @@ class OpenAIProvider:
             request["tools"] = [self._to_openai_tool(t) for t in tools]
             request["tool_choice"] = "auto"
 
+        self._ensure_client()
+        RateLimitError = self._exc_rate_limit
+        APITimeoutError = self._exc_timeout
+        APIConnectionError = self._exc_connection
+        APIStatusError = self._exc_status
+
         try:
             resp = await self._client.chat.completions.create(**request)
-        except OpenAIRateLimitError as exc:
+        except RateLimitError as exc:
             raise LLMError(str(exc), failure_class=FailureClass.LLM_RATE_LIMIT) from exc
         except APITimeoutError as exc:
             raise LLMError(str(exc), failure_class=FailureClass.LLM_TIMEOUT) from exc
@@ -172,17 +206,24 @@ class OpenAIProvider:
         else:
             request["max_tokens"] = max_tokens
 
+        self._ensure_client()
+        RateLimitError = self._exc_rate_limit
+        APITimeoutError = self._exc_timeout
+        APIConnectionError = self._exc_connection
+        APIStatusError = self._exc_status
+
         try:
             async with await self._client.chat.completions.create(**request) as stream:
                 async for chunk in stream:
                     delta = chunk.choices[0].delta if chunk.choices else None
                     if delta and delta.content:
                         yield delta.content
-        except (OpenAIRateLimitError, APITimeoutError, APIConnectionError, APIStatusError) as exc:
+        except (RateLimitError, APITimeoutError, APIConnectionError, APIStatusError) as exc:
             raise LLMError(str(exc), failure_class=FailureClass.LLM_ERROR) from exc
 
     async def health_check(self) -> bool:
         """Check reachability by listing one model."""
+        self._ensure_client()
         try:
             await self._client.models.list()
             return True
@@ -264,13 +305,30 @@ class AzureOpenAIProvider(OpenAIProvider):
         api_version: str = "2025-04-01-preview",
         timeout: float = 120.0,
     ) -> None:
-        from openai import AsyncAzureOpenAI
+        try:
+            from openai import AsyncAzureOpenAI
+            from openai import APIConnectionError, APIStatusError, APITimeoutError
+            from openai import RateLimitError as OpenAIRateLimitError
+        except ImportError as exc:
+            raise ImportError(
+                "openai package is required for AzureOpenAIProvider.\n"
+                "Install: pip install openai\n"
+                "     or: pip install agent-haas[openai]"
+            ) from exc
         from urllib.parse import urlparse, urlunparse
 
-        self.model = deployment   # Azure uses deployment name as model identifier
+        self.model = deployment
+        self._is_reasoning = (
+            deployment in _REASONING_MODELS
+            or any(deployment.startswith(p) for p in _REASONING_PREFIXES)
+        )
+        # Seed exception caches so parent methods work without calling _ensure_client
+        self._exc_rate_limit = OpenAIRateLimitError
+        self._exc_timeout = APITimeoutError
+        self._exc_connection = APIConnectionError
+        self._exc_status = APIStatusError
 
-        # Normalize endpoint: strip any /openai/* suffix the user included.
-        # AzureOpenAI client builds its own path on top of the base URL.
+        # Normalize endpoint
         parsed = urlparse(azure_endpoint)
         base = parsed.path.split("/openai")[0].rstrip("/")
         clean_endpoint = urlunparse(parsed._replace(path=base + "/"))
@@ -282,10 +340,6 @@ class AzureOpenAIProvider(OpenAIProvider):
             api_version=api_version,
             timeout=timeout,
             max_retries=0,
-        )
-        self._is_reasoning = (
-            deployment in _REASONING_MODELS
-            or any(deployment.startswith(p) for p in _REASONING_PREFIXES)
         )
         logger.info(
             "AzureOpenAIProvider: deployment=%s endpoint=%s api_version=%s",

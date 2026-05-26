@@ -5,12 +5,24 @@ from __future__ import annotations
 from typing import Any
 
 from harness.core.protocols import EmbeddingProvider, VectorStore
-from harness.memory.embedder import SentenceTransformerEmbedder
 
 
 def build_embedding_provider(config: Any) -> EmbeddingProvider:
-    """Construct a SentenceTransformerEmbedder from harness config."""
-    return SentenceTransformerEmbedder(model_name=config.embedding_model)  # type: ignore[return-value]
+    """Construct an embedder from harness config.
+
+    Default: ``FastEmbedEmbedder`` (ONNX, ~100 MB, no PyTorch).
+    Set ``EMBEDDING_BACKEND=sentence-transformers`` in ``.env`` to use
+    the heavier torch-based backend (requires ``pip install agent-haas[embed-full]``).
+    """
+    backend = getattr(config, "embedding_backend", "fastembed")
+    model = getattr(config, "embedding_model", None) or "BAAI/bge-small-en-v1.5"
+
+    if backend == "sentence-transformers":
+        from harness.memory.embedder import SentenceTransformerEmbedder
+        return SentenceTransformerEmbedder(model_name=model)  # type: ignore[return-value]
+
+    from harness.memory.embedder import FastEmbedEmbedder
+    return FastEmbedEmbedder(model_name=model)  # type: ignore[return-value]
 
 
 def build_vector_store(config: Any, embedder: EmbeddingProvider) -> VectorStore:

@@ -147,6 +147,92 @@ class SentenceTransformerEmbedder:
                 )
             except ImportError as exc:
                 raise RuntimeError(
-                    "sentence-transformers package is required. "
-                    "Install it with: pip install sentence-transformers"
+                    "sentence-transformers (PyTorch ~1.5 GB) is required for this embedder.\n"
+                    "Install: pip install agent-haas[embed-full]\n"
+                    "For a lightweight alternative (~100 MB, no PyTorch): "
+                    "use FastEmbedEmbedder — pip install agent-haas[vector]"
+                ) from exc
+
+
+class FastEmbedEmbedder:
+    """Lightweight ONNX embedder using fastembed — no PyTorch required.
+
+    Install size: ~100 MB vs ~1.5 GB for sentence-transformers + torch.
+    Default model: ``BAAI/bge-small-en-v1.5`` (384 dims, quality on par
+    with ``all-MiniLM-L6-v2``).
+
+    This is the default embedder when ``pip install agent-haas[vector]``
+    is used. Switch to ``SentenceTransformerEmbedder`` only when you need
+    a specific model that fastembed does not support.
+    """
+
+    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5") -> None:
+        self._model_name = model_name
+        self._model: Any = None
+        self._dims: int = 384          # default for bge-small; updated after load
+        self._load_lock = asyncio.Lock()
+        self._cache = _LRUCache(_LRU_MAX)
+
+    @property
+    def model(self) -> str:
+        return self._model_name
+
+    @property
+    def dimensions(self) -> int:
+        return self._dims
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Return ONNX embeddings for ``texts`` with LRU caching."""
+        await self._ensure_loaded()
+
+        results: list[list[float] | None] = [None] * len(texts)
+        uncached_indices: list[int] = []
+        uncached_texts: list[str] = []
+
+        for idx, text in enumerate(texts):
+            key = _text_cache_key(text)
+            cached = await self._cache.get(key)
+            if cached is not None:
+                results[idx] = cached
+            else:
+                uncached_indices.append(idx)
+                uncached_texts.append(text)
+
+        if uncached_texts:
+            loop = asyncio.get_running_loop()
+            raw: list[list[float]] = await loop.run_in_executor(
+                None,
+                lambda: [emb.tolist() for emb in self._model.embed(uncached_texts)],
+            )
+            for idx, text, embedding in zip(uncached_indices, uncached_texts, raw):
+                key = _text_cache_key(text)
+                await self._cache.set(key, embedding)
+                results[idx] = embedding
+
+        return [r for r in results if r is not None]
+
+    async def _ensure_loaded(self) -> None:
+        if self._model is not None:
+            return
+        async with self._load_lock:
+            if self._model is not None:
+                return
+            logger.info("Loading FastEmbed model: %s", self._model_name)
+            loop = asyncio.get_running_loop()
+            try:
+                from fastembed import TextEmbedding  # type: ignore[import]
+
+                self._model = await loop.run_in_executor(
+                    None, lambda: TextEmbedding(self._model_name)
+                )
+                # Probe dimensions on a dummy input
+                probe = list(self._model.embed(["probe"]))
+                if probe:
+                    self._dims = len(probe[0])
+                logger.info("FastEmbed model loaded — dimensions=%d", self._dims)
+            except ImportError as exc:
+                raise RuntimeError(
+                    "fastembed package is required for FastEmbedEmbedder.\n"
+                    "Install: pip install agent-haas[vector]\n"
+                    "For PyTorch-based embeddings: pip install agent-haas[embed-full]"
                 ) from exc

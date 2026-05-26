@@ -15,10 +15,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from harness.llm.anthropic import AnthropicProvider
-from harness.llm.hermes import HermesXMLProvider
-from harness.llm.local import ModelCapabilities, OpenAICompatProvider
-from harness.llm.openai_provider import AzureOpenAIProvider, OpenAIProvider
 from harness.llm.router import LLMRouter, LLMRouterConfig
 
 if TYPE_CHECKING:
@@ -59,6 +55,12 @@ def build_router(config: "Settings") -> LLMRouter:
         circuit_success_threshold=2,
     )
     router = LLMRouter(config=router_config)
+
+    # Lazy provider imports — SDKs are optional extras
+    from harness.llm.anthropic import AnthropicProvider
+    from harness.llm.hermes import HermesXMLProvider
+    from harness.llm.local import ModelCapabilities, OpenAICompatProvider
+    from harness.llm.openai_provider import AzureOpenAIProvider, OpenAIProvider
 
     # ------------------------------------------------------------------
     # Azure OpenAI (priority 0 — takes precedence when configured)
