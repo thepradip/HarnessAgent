@@ -5,16 +5,18 @@ Production-grade agent harness for building, running, observing, and self-improv
 [![PyPI](https://img.shields.io/pypi/v/agent-haas?color=blue&label=PyPI)](https://pypi.org/project/agent-haas/)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-green?logo=fastapi)](https://fastapi.tiangolo.com)
-[![Tests](https://img.shields.io/badge/tests-990%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1058%20passing-brightgreen)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Models](https://img.shields.io/badge/LLMs-Claude%20%7C%20GPT--5%20%7C%20vLLM%20%7C%20llama.cpp-purple)](https://thepradip.github.io/HarnessAgent-docs/)
 
 ---
 
 ```bash
-pip install agent-haas                        # core
-pip install agent-haas[vector,observe,mcp]    # recommended
-pip install agent-haas[all]                   # everything
+pip install agent-haas                                    # core ~50 MB — no torch, no SDKs
+pip install agent-haas[anthropic,api,vector,workers,sql]  # recommended ~300 MB
+pip install agent-haas[recommended]                       # same as above, one flag
+pip install agent-haas[all]                               # everything except torch ~500 MB
+pip install agent-haas[all,embed-full]                    # + sentence-transformers + torch ~2 GB
 ```
 
 ---
@@ -340,7 +342,7 @@ docker compose --profile local-cpu up -d llamacpp
 
 ```bash
 brew install redis && brew services start redis
-pip install agent-haas[vector,observe,mcp]
+pip install agent-haas[anthropic,api,vector,observe,mcp]
 uvicorn harness.api.main:create_app --factory --port 8000
 # Open http://localhost:8000/ for the dashboard
 ```
@@ -691,7 +693,8 @@ LLAMACPP_BASE_URL=http://localhost:8080
 # Memory backends
 VECTOR_BACKEND=chroma          # chroma | qdrant | weaviate
 GRAPH_BACKEND=networkx         # networkx | neo4j
-EMBEDDING_MODEL=all-MiniLM-L6-v2
+EMBEDDING_MODEL=BAAI/bge-small-en-v1.5   # fastembed default (~100 MB, no torch)
+EMBEDDING_BACKEND=fastembed              # fastembed (default) | sentence-transformers (+1.5 GB)
 
 # Sandbox — code execution isolation
 SANDBOX_WORKLOAD=general       # general (256m) | data (512m) | ml (2g)
@@ -723,14 +726,14 @@ ENVIRONMENT=dev                # dev | staging | prod
 | Layer | Technology | Notes |
 |---|---|---|
 | API | FastAPI + uvicorn | Async, SSE for step streaming |
-| LLM | anthropic + openai SDKs | Both support streaming and native tool calling |
+| LLM | anthropic + openai SDKs | Optional extras `[anthropic]` / `[openai]`; lazy-loaded |
 | Tracing | TraceRecorder + Redis + JSONL | Hierarchical spans; 48 h live query; durable JSONL |
 | OTel export | opentelemetry-sdk | Optional; exports to Jaeger / Tempo / Grafana Tempo |
 | Short-term memory | Redis LIST | Conversation history per run |
 | Context engine | Redis + VectorStore | Paged offload, skill namespaces, action scoring |
 | Long-term memory | Qdrant / ChromaDB / Weaviate | Chroma for dev, Qdrant/Weaviate for prod |
 | Knowledge graph | NetworkX / Neo4j | NetworkX in-process for dev, Neo4j for production |
-| LLM cache | Redis + SentenceTransformer | Cosine similarity at 0.97 threshold |
+| LLM cache | Redis + FastEmbedEmbedder | Cosine similarity at 0.97 threshold; ONNX, no torch |
 | Experiment tracking | MLflow | LLM-native spans, eval metrics, prompt versioning |
 | Metrics | Prometheus + Grafana | 15 pre-defined metrics |
 | Safety | Guardrail + policy enforcement | 3-stage pipeline + per-tenant tool/exec/write gates |
@@ -760,12 +763,14 @@ PYTHONPATH=src python3 -m pytest tests/unit/test_filesystem.py
 PYTHONPATH=src python3 -m pytest tests/ --cov=src/harness --cov-report=term-missing
 ```
 
-**Current: 990 unit tests passing, 0 failures.**
+**Current: 1058 unit tests passing, 0 failures.**
 
 | Test file | Tests | What it covers |
 |---|---|---|
 | `test_security.py` | 52 | SecretProvider (Env/Vault/AWS/Cached/Tenant), SecretScanner, pipeline integration |
 | `test_skill_store.py` | 68 | SkillStore CRUD, retrieval, validation, health report, red flags, SkillCapture |
+| `test_verifier.py` | 31 | PEV CodeExitCodeVerifier, ExpectedOutputVerifier, BaseAgent feedback injection |
+| `test_harness_attribution.py` | 37 | HarnessComponent attribution, generate_retry_patch, generate_permission_patch |
 | `test_filesystem.py` | 43 | CheckpointManager, WorkspaceManager, DockerSandbox runtime flag, SessionDockerSandbox |
 | `test_agent_base.py` | 77 | Checkpoint resume, policy enforcement, HITL, skill retrieval, session sandbox |
 | `test_safety.py` | 52 | HarnessPolicy, PolicyStore, pipeline factory |
