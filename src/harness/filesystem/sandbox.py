@@ -60,12 +60,21 @@ class DockerSandbox:
     Security controls:
     - Memory limit (default 256 MiB)
     - CPU limit (1 core)
+    - Wall-clock timeout via asyncio (kills the container on breach)
+    - CPU time limit via ``--ulimit cpu=<N>`` (kernel RLIMIT_CPU; kills
+      infinite loops that stay within the wall-clock window)
+    - Disk write limit via ``--ulimit fsize=<bytes>`` (RLIMIT_FSIZE;
+      SIGXFSZ on any single file exceeding the limit)
+    - PID limit via ``--pids-limit`` (prevents fork bombs)
     - Optional network isolation (default: no network)
     - Read/write mount of workspace only
     - Optional gVisor / Kata kernel isolation via ``runtime``
 
     Falls back to RestrictedPythonExecutor if Docker is unavailable.
     """
+
+    # 512 MiB fsize limit expressed in 512-byte blocks (ulimit unit)
+    _DEFAULT_FSIZE_BLOCKS = 512 * 1024 * 1024 // 512   # = 1 048 576
 
     def __init__(
         self,
@@ -74,12 +83,19 @@ class DockerSandbox:
         timeout: float = 30.0,
         network: bool = False,
         runtime: str = "runc",
+        cpu_time_seconds: int = 60,
+        disk_quota_mb: int = 512,
+        pids_limit: int = 64,
     ) -> None:
         self._image = image
         self._memory_limit = memory_limit
         self._timeout = timeout
         self._network = network
         self._runtime = runtime
+        self._cpu_time = cpu_time_seconds
+        # ulimit fsize is in 512-byte blocks
+        self._fsize_blocks = (disk_quota_mb * 1024 * 1024) // 512
+        self._pids_limit = pids_limit
 
     # ------------------------------------------------------------------
     # Public API
@@ -102,12 +118,15 @@ class DockerSandbox:
             "docker", "run",
             "--rm",
             f"--memory={self._memory_limit}",
-            "--memory-swap=-1",        # disable swap
+            "--memory-swap=-1",            # disable swap
             "--cpus=1",
+            f"--pids-limit={self._pids_limit}",  # prevent fork bombs
+            f"--ulimit=cpu={self._cpu_time}:{self._cpu_time}",   # RLIMIT_CPU (soft=hard)
+            f"--ulimit=fsize={self._fsize_blocks}:{self._fsize_blocks}",  # RLIMIT_FSIZE
             f"--network={'none' if not self._network else 'bridge'}",
             "--volume", f"{workspace_path.resolve()}:/sandbox:rw",
             "--workdir=/sandbox",
-            "--user=nobody",           # non-root execution
+            "--user=nobody",               # non-root execution
             "--security-opt=no-new-privileges",
         ]
         if self._runtime != "runc":
@@ -230,6 +249,9 @@ class SessionDockerSandbox:
         timeout: float = 30.0,
         network: bool = False,
         runtime: str = "runc",
+        cpu_time_seconds: int = 60,
+        disk_quota_mb: int = 512,
+        pids_limit: int = 64,
     ) -> None:
         self._workspace = workspace_path
         self._image = image
@@ -237,6 +259,9 @@ class SessionDockerSandbox:
         self._timeout = timeout
         self._network = network
         self._runtime = runtime
+        self._cpu_time = cpu_time_seconds
+        self._fsize_blocks = (disk_quota_mb * 1024 * 1024) // 512
+        self._pids_limit = pids_limit
         self._container_id: str | None = None
 
     # ------------------------------------------------------------------
@@ -274,9 +299,15 @@ class SessionDockerSandbox:
             raise SandboxError(f"Failed to write code to workspace: {exc}")
 
         exec_timeout = timeout if timeout is not None else self._timeout
+        # Wrap with `timeout -k <grace> <secs>` inside the container so the
+        # Python process is actually killed when the wall-clock limit fires —
+        # killing the outer `docker exec` process only stops the watcher, not
+        # the code running inside the container.
+        grace = max(3, int(exec_timeout * 0.1))   # 10% grace for SIGKILL
         cmd = [
             "docker", "exec",
             self._container_id,
+            "timeout", "-k", str(grace), str(int(exec_timeout)),
             "python", f"/sandbox/{run_filename}",
         ]
 
@@ -354,6 +385,9 @@ class SessionDockerSandbox:
             f"--memory={self._memory_limit}",
             "--memory-swap=-1",
             "--cpus=1",
+            f"--pids-limit={self._pids_limit}",
+            f"--ulimit=cpu={self._cpu_time}:{self._cpu_time}",
+            f"--ulimit=fsize={self._fsize_blocks}:{self._fsize_blocks}",
             f"--network={'none' if not self._network else 'bridge'}",
             "--volume", f"{self._workspace.resolve()}:/sandbox:rw",
             "--workdir=/sandbox",
