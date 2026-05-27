@@ -16,6 +16,7 @@ from harness.core.protocols import ToolExecutor
 logger = logging.getLogger(__name__)
 
 _TOOL_CALLS_METRIC = "tool_calls_total"
+_TOOL_RESULT_MAX_CHARS = 8_000  # max chars before truncating tool output entering agent history
 
 
 class ToolRegistry:
@@ -190,6 +191,9 @@ class ToolRegistry:
                 context={"run_id": ctx.run_id, "original_error": str(exc)},
             ) from exc
 
+        # 5a. Cap tool result size — prevent large outputs from bloating agent history
+        result = _cap_tool_result(result)
+
         # 5. Output schema validation (if tool declares output_schema)
         if hasattr(tool, "output_schema") and tool.output_schema and not result.is_error:
             try:
@@ -253,6 +257,35 @@ class ToolRegistry:
                 counter.labels(**labels).inc()
         except Exception as exc:
             logger.debug("Metrics increment failed: %s", exc)
+
+
+def _cap_tool_result(result: ToolResult) -> ToolResult:
+    """Truncate tool result data if its text representation exceeds _TOOL_RESULT_MAX_CHARS.
+
+    Large tool outputs (e.g. full-table SQL dumps, verbose file reads) would otherwise
+    consume most of the agent's context window.  We cap at 8 k chars and record the
+    original length in ``metadata`` so callers can detect the truncation.
+    """
+    if result.is_error:
+        return result
+    try:
+        text = result.to_text()
+    except Exception:
+        return result
+    if len(text) <= _TOOL_RESULT_MAX_CHARS:
+        return result
+    truncated = text[:_TOOL_RESULT_MAX_CHARS] + (
+        f"\n…[truncated — original output was {len(text):,} chars; "
+        f"showing first {_TOOL_RESULT_MAX_CHARS:,}]"
+    )
+    logger.debug(
+        "Tool result capped: original=%d chars, limit=%d", len(text), _TOOL_RESULT_MAX_CHARS
+    )
+    return ToolResult(
+        data=truncated,
+        error=None,
+        metadata={**result.metadata, "truncated": True, "original_chars": len(text)},
+    )
 
 
 async def _maybe_await(obj: Any) -> Any:

@@ -219,3 +219,61 @@ async def test_workspace_tool_rejects_path_traversal(tmp_path):
 
     assert result.is_error is True
     assert "traversal" in result.error.lower() or "path" in result.error.lower() or "outside" in result.error.lower()
+
+
+# ---------------------------------------------------------------------------
+# Tool result size cap
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_registry_caps_large_tool_result(tmp_path):
+    """Tool outputs exceeding 8 k chars should be truncated before returning."""
+    from harness.tools.registry import _TOOL_RESULT_MAX_CHARS
+
+    large_data = "x" * (_TOOL_RESULT_MAX_CHARS + 5_000)
+    registry = ToolRegistry()
+    tool = _make_tool("big_tool", response=large_data)
+    registry.register(tool)
+
+    ctx = _make_ctx(tmp_path)
+    call = ToolCall(id="call-big", name="big_tool", args={})
+    result = await registry.execute(ctx, call)
+
+    assert not result.is_error
+    assert result.metadata.get("truncated") is True
+    assert result.metadata.get("original_chars") == len(f'"{large_data}"')  # json.dumps adds quotes
+    assert len(result.to_text()) < _TOOL_RESULT_MAX_CHARS + 200  # truncated + suffix
+
+
+@pytest.mark.asyncio
+async def test_registry_does_not_cap_small_tool_result(tmp_path):
+    """Tool outputs under the 8 k cap should pass through unchanged."""
+    from harness.tools.registry import _TOOL_RESULT_MAX_CHARS
+
+    small_data = {"result": "short answer"}
+    registry = ToolRegistry()
+    tool = _make_tool("small_tool", response=small_data)
+    registry.register(tool)
+
+    ctx = _make_ctx(tmp_path)
+    call = ToolCall(id="call-small", name="small_tool", args={})
+    result = await registry.execute(ctx, call)
+
+    assert not result.is_error
+    assert result.metadata.get("truncated") is None
+    assert result.data == small_data
+
+
+@pytest.mark.asyncio
+async def test_registry_does_not_cap_error_result(tmp_path):
+    """Error results should never be truncated."""
+    registry = ToolRegistry()
+    tool = _make_tool("err_tool", error="something went wrong")
+    registry.register(tool)
+
+    ctx = _make_ctx(tmp_path)
+    call = ToolCall(id="call-err", name="err_tool", args={})
+    result = await registry.execute(ctx, call)
+
+    assert result.is_error
+    assert result.metadata.get("truncated") is None

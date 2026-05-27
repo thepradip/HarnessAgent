@@ -5,7 +5,7 @@ Production-grade agent harness for building, running, observing, and self-improv
 [![PyPI](https://img.shields.io/pypi/v/agent-haas?color=blue&label=PyPI)](https://pypi.org/project/agent-haas/)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-green?logo=fastapi)](https://fastapi.tiangolo.com)
-[![Tests](https://img.shields.io/badge/tests-1058%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1087%20passing-brightgreen)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Models](https://img.shields.io/badge/LLMs-Claude%20%7C%20GPT--5%20%7C%20vLLM%20%7C%20llama.cpp-purple)](https://thepradip.github.io/HarnessAgent-docs/)
 
@@ -114,12 +114,33 @@ HarnessAgent handles all of that.
 | **Reliable Checkpoints** | Full conversation history saved every 10 steps and on every exit (crash, cancel, budget, success); resumes from exact message |
 | **Multi-Agent DAG** | Planner decomposes tasks → DAG; Scheduler executes in parallel with back-pressure + handoff enrichment |
 | **MCP Support** | Connect any MCP server over stdio or SSE; YAML config; environment variable interpolation |
+| **Tool Result Cap** | Tool outputs capped at 8 k chars before entering agent history; `metadata["truncated"]` flag + `original_chars` for observability |
 | **Eval Framework** | Dataset-driven evaluation with per-case diagnostics, failure stage classification, and optimization hints |
 | **Audit Trail** | Append-only compliance log (PII-hashed payloads) with Redis stream + JSONL dual persistence |
 
 ---
 
 ## What's new
+
+### Tool result size cap
+
+Large tool outputs (full-table SQL dumps, verbose file reads) are automatically capped at **8,000 chars** before they enter agent history, preventing a single noisy tool call from consuming the entire context window.
+
+```python
+result = await registry.execute(ctx, call)
+
+# Small result — passes through unchanged
+result.data          # → {"rows": [...]}
+result.metadata      # → {}
+
+# Large result — automatically truncated
+result.data          # → "col1 | col2\n...\n…[truncated — original output was 42,310 chars]"
+result.metadata      # → {"truncated": True, "original_chars": 42310}
+```
+
+The truncation suffix shows the original byte count so you can decide whether to re-run with a narrower query or `LIMIT` clause. The `FailureCategory.OUTPUT_TRUNCATED` failure category + `top_hint()` will surface this automatically during eval.
+
+---
 
 ### Secret vault & scanner
 
