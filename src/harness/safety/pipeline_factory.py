@@ -206,21 +206,103 @@ def get_default_config(agent_type: str) -> SafetyConfig:
 
 import re as _re
 
+# ---------------------------------------------------------------------------
+# Input patterns — prompt injection
+# ---------------------------------------------------------------------------
+
 _INJECTION_PATTERNS = [
     _re.compile(r"ignore\s+(all\s+)?previous\s+instructions", _re.I),
     _re.compile(r"forget\s+your\s+(system\s+)?instructions", _re.I),
+    _re.compile(r"disregard\s+(all|previous|prior)\s+instructions", _re.I),
     _re.compile(r"you\s+are\s+now\s+(a\s+different|DAN|an?\s+unrestricted)", _re.I),
-    _re.compile(r"act\s+as\s+if\s+you\s+have\s+no\s+restrictions", _re.I),
+    _re.compile(r"you\s+are\s+now\s+DAN", _re.I),          # explicit DAN variant
+    _re.compile(r"act\s+as\s+(if\s+you\s+have\s+no\s+|DAN|an?\s+unrestricted)", _re.I),
+    _re.compile(r"pretend\s+(you\s+are|to\s+be)\s+", _re.I),
+    _re.compile(r"override\s+(your\s+)?(safety|instructions|guidelines|restrictions)", _re.I),
     _re.compile(r"jailbreak", _re.I),
     _re.compile(r"prompt\s+injection", _re.I),
     _re.compile(r"</?(system|SYSTEM)>", _re.I),
+    _re.compile(r"new\s+policy\s*[:;]", _re.I),
+    _re.compile(r"<!--\s*system\s*:", _re.I),               # HTML comment injection
+    _re.compile(r"UNION\s+ALL\s+SELECT", _re.I),            # SQL injection in prompts
 ]
+
+# ---------------------------------------------------------------------------
+# Step patterns — dangerous SQL (mutations and schema changes)
+# ---------------------------------------------------------------------------
+
+_DANGEROUS_SQL = _re.compile(
+    r"\b("
+    r"DROP\s+(TABLE|DATABASE|INDEX|VIEW|SCHEMA|TRIGGER|PROCEDURE|FUNCTION)"
+    r"|DELETE\s+FROM"
+    r"|UPDATE\s+\w+"
+    r"|INSERT\s+INTO"
+    r"|TRUNCATE(\s+TABLE)?"
+    r"|ALTER\s+(TABLE|DATABASE|COLUMN|INDEX)"
+    r"|CREATE\s+(TABLE|DATABASE|INDEX|TRIGGER|PROCEDURE)"
+    r"|EXEC(\s*\(|\s+sp_)"
+    r"|GRANT\s|REVOKE\s"
+    r"|MERGE\s+INTO"
+    r"|REPLACE\s+INTO"
+    r")\b",
+    _re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
+# Step patterns — dangerous code execution inside run_python / run_shell args
+# ---------------------------------------------------------------------------
+
+_DANGEROUS_CODE = _re.compile(
+    r"("
+    r"os\.remove\s*\("
+    r"|os\.unlink\s*\("
+    r"|os\.rmdir\s*\("
+    r"|shutil\.rmtree\s*\("
+    r"|shutil\.move\s*\("
+    r"|subprocess\.(call|run|Popen|check_output|check_call)\s*\("
+    r"|os\.(system|popen)\s*\("
+    r"|\beval\s*\("                   # eval with user input
+    r"|\bexec\s*\("                   # exec with user input
+    r"|__import__\s*\("
+    r"|open\s*\([^)]*['\"][wa]['\"]"  # write/append mode file open
+    r"|rm\s+-[rf]"                    # shell rm
+    r"|chmod\s+[0-7]*7[0-7]*"         # world-writable chmod
+    r"|chown\s+root"
+    r"|\bsudo\s"
+    r"|\bsu\s"
+    r"|dd\s+if="                      # disk wipe
+    r"|mkfs\."                        # filesystem format
+    r")",
+    _re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
+# Step patterns — sensitive file paths that should never be read/written
+# ---------------------------------------------------------------------------
+
+_SENSITIVE_PATHS = _re.compile(
+    r"("
+    r"/etc/(passwd|shadow|hosts|sudoers|ssh|cron)"
+    r"|/proc/[0-9]"
+    r"|/sys/(kernel|class)"
+    r"|/root/\."
+    r"|C:\\Windows\\System32"
+    r"|\.\.(/|\\)\.\.((/|\\)\.\.){1,}"  # path traversal ../../..
+    r")",
+    _re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
+# Output patterns — PII redaction
+# ---------------------------------------------------------------------------
 
 _PII_PATTERNS = [
     (_re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[SSN REDACTED]"),
     (_re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"), "[EMAIL REDACTED]"),
     (_re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b"), "[PHONE REDACTED]"),
     (_re.compile(r"\b4[0-9]{12}(?:[0-9]{3})?\b"), "[CARD REDACTED]"),
+    (_re.compile(r"\b5[1-5][0-9]{14}\b"), "[CARD REDACTED]"),   # Mastercard
+    (_re.compile(r"\b3[47][0-9]{13}\b"), "[CARD REDACTED]"),    # Amex
 ]
 
 
@@ -271,38 +353,145 @@ class _HardConstraintPipeline:
 
     async def check_step(self, payload: Any) -> _GuardResult:
         tool_name = ""
+        args: dict = {}
+
         if isinstance(payload, dict):
             tool_name = str(payload.get("tool_name", payload.get("tool", "")))
+            args = payload.get("args", {}) or {}
         elif hasattr(payload, "name"):
             tool_name = payload.name
+            args = getattr(payload, "args", {}) or {}
 
+        # 1. Blocked tool names
         if tool_name and tool_name in self._blocked_tools:
             return _GuardResult(
                 blocked=True,
                 reason=f"Tool '{tool_name}' is in the blocked list",
             )
+
+        # 2. Inspect SQL arguments for destructive statements
+        #    Applies when tool is execute_sql / run_sql / query, or any arg named
+        #    'query' / 'sql' is present.
+        sql_tools = {"execute_sql", "run_sql", "query", "sql_query"}
+        sql_arg_keys = {"query", "sql", "statement"}
+        sql_content = ""
+        if tool_name.lower() in sql_tools:
+            sql_content = " ".join(str(v) for v in args.values())
+        else:
+            for k in sql_arg_keys:
+                if k in args:
+                    sql_content = str(args[k])
+                    break
+
+        if sql_content and _DANGEROUS_SQL.search(sql_content):
+            logger.warning(
+                "HardConstraintPipeline: destructive SQL detected in tool '%s': %r",
+                tool_name, sql_content[:200],
+            )
+            return _GuardResult(
+                blocked=True,
+                reason=(
+                    f"Destructive SQL detected in '{tool_name}': "
+                    f"{_DANGEROUS_SQL.search(sql_content).group()!r}"  # type: ignore[union-attr]
+                ),
+            )
+
+        # 3. Inspect code arguments for dangerous patterns
+        #    Applies when tool is run_python / run_code / run_shell / execute_code,
+        #    or any arg named 'code' / 'script' / 'command' is present.
+        code_tools = {"run_python", "run_code", "run_shell", "execute_code", "exec_code"}
+        code_arg_keys = {"code", "script", "command", "cmd"}
+        code_content = ""
+        if tool_name.lower() in code_tools:
+            code_content = " ".join(str(v) for v in args.values())
+        else:
+            for k in code_arg_keys:
+                if k in args:
+                    code_content = str(args[k])
+                    break
+
+        if code_content and _DANGEROUS_CODE.search(code_content):
+            match = _DANGEROUS_CODE.search(code_content)
+            logger.warning(
+                "HardConstraintPipeline: dangerous code pattern in tool '%s': %r",
+                tool_name, code_content[:200],
+            )
+            return _GuardResult(
+                blocked=True,
+                reason=f"Dangerous code pattern detected in '{tool_name}': {match.group()!r}",  # type: ignore[union-attr]
+            )
+
+        # 4. Inspect file path arguments for sensitive paths
+        path_arg_keys = {"path", "file_path", "filename", "filepath", "dest", "source"}
+        for k in path_arg_keys:
+            if k in args:
+                path_val = str(args[k])
+                if _SENSITIVE_PATHS.search(path_val):
+                    logger.warning(
+                        "HardConstraintPipeline: sensitive path in tool '%s': %r",
+                        tool_name, path_val,
+                    )
+                    return _GuardResult(
+                        blocked=True,
+                        reason=f"Sensitive path detected in '{tool_name}': {path_val!r}",
+                    )
+
         return _GuardResult(blocked=False)
 
     async def check_output(self, payload: Any) -> _GuardResult:
-        """Scan output for leaked secrets. Never blocks — redacts and warns."""
+        """Scan output for leaked secrets, PII, and injection patterns.
+
+        Blocks output that contains:
+        - API keys / tokens (Anthropic, OpenAI, GitHub, Slack, JWT, etc.)
+        - Prompt injection instructions embedded in LLM output
+
+        Warns (does not block) for PII — PII is redacted by the caller
+        using the ``redact()`` method instead.
+        """
         content = ""
         if isinstance(payload, dict):
-            content = str(payload.get("content", ""))
+            content = str(payload.get("content", payload.get("output", "")))
         elif isinstance(payload, str):
             content = payload
 
-        if content and self._secret_scanner is not None:
+        if not content:
+            return _GuardResult(blocked=False)
+
+        # 1. Block on detected API keys / secrets
+        if self._secret_scanner is not None:
             matches = self._secret_scanner.scan(content)
             if matches:
                 names = ", ".join(m.pattern_name for m in matches)
                 logger.warning(
-                    "Secret leak detected in LLM output (%s) — redacting before use",
+                    "Output blocked: secret leak detected (%s) in LLM output",
                     names,
                 )
                 return _GuardResult(
-                    blocked=False,
-                    reason=f"secret_detected:{names}",
+                    blocked=True,
+                    reason=f"Secret leak in output ({names}) — output blocked before reaching caller",
                 )
+
+        # 2. Block on injection instructions in LLM output
+        #    (adversarial LLM responses that try to hijack the next turn)
+        for pattern in _INJECTION_PATTERNS:
+            if pattern.search(content):
+                logger.warning(
+                    "Output blocked: injection pattern in LLM output: %r",
+                    content[:120],
+                )
+                return _GuardResult(
+                    blocked=True,
+                    reason=f"Injection pattern in LLM output: {pattern.pattern}",
+                )
+
+        # 3. Warn on PII (not blocked — caller should call redact())
+        for pii_pattern, _ in _PII_PATTERNS:
+            if pii_pattern.search(content):
+                logger.warning(
+                    "PII pattern detected in output — call redact() before storing",
+                )
+                break
+
         return _GuardResult(blocked=False)
 
     def redact(self, text: str) -> str:
