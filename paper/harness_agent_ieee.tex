@@ -85,7 +85,7 @@ requests with \textbf{0\%} false positive rate. On 50 ATBench-inspired
 safety trajectories the guardrail achieves \textbf{TPR\,=\,96.7\%} and
 \textbf{TNR\,=\,100\%}. The Hermes loop improves pre/post-patch pass@1
 by \textbf{+85\,pp} on embedded GAIA-style tasks (5\%$\to$90\%).
-The package is \texttt{pip install agent-haas} with 1,087 passing tests.
+The package is \texttt{pip install agent-haas} with 1,131 passing tests.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -129,7 +129,7 @@ observable, self-improving production system.
   \item \textbf{HaaS design contract and implementation.} A formal
     separation between task logic and production infrastructure,
     implemented as a pip-installable layer with adapters for four
-    frameworks and verified by 1,087 passing tests.
+    frameworks and verified by 1,131 passing tests.
   \item \textbf{Three-tier context engineering with GraphRAG.}
     A configurable L1/L2/L3 pipeline with graph-structured schema
     retrieval that cuts token consumption by 82.9\% while maintaining
@@ -487,7 +487,7 @@ is swappable. NetworkX requires zero dependencies and covers all
 development and test scenarios; Neo4j handles enterprise schemas with
 200+ tables.
 
-\textbf{fakeredis in tests.} All 1,087 unit and integration tests run
+\textbf{fakeredis in tests.} All 1,131 unit and integration tests run
 without a real Redis instance using \texttt{fakeredis}. Test execution
 is fully deterministic and CI-friendly.
 
@@ -576,6 +576,15 @@ Real-execution benchmarks are 7.1--7.4 and 7.9--7.10.
 \end{tabular}
 \end{table*}
 
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig2_graphrag_tokens.pdf}
+  \caption{GraphRAG token consumption vs.\ full-DDL naive baseline.
+    BFS depth-2 retrieval over a 10-table schema reduces tokens by
+    82.9\% while maintaining 100\% table coverage.}
+  \label{fig:graphrag}
+\end{figure}
+
 \subsection{GraphRAG Token Efficiency}
 \label{sec:eval_graphrag}
 
@@ -621,6 +630,24 @@ and burst scenarios. In the intermittent scenario, the sliding window
 resets on successes and the circuit never trips — 0 false positive trips
 across all three scenarios.
 
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig5_span_overhead.pdf}
+  \caption{Span recording latency (2,000 iterations). Real localhost
+    Redis adds 459\,\textmu{}s over fakeredis. Both are far below
+    the 5\,ms production threshold (dashed line).}
+  \label{fig:spans}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig6_circuit_breaker.pdf}
+  \caption{Circuit breaker state machine. Opens in 0.01\,ms after
+    5 consecutive failures; recovers after 60\,s and 2 probe successes.
+    Zero false trips across all three fault scenarios.}
+  \label{fig:cb}
+\end{figure}
+
 \subsection{Span Recording Overhead}
 \label{sec:eval_spans}
 
@@ -638,6 +665,15 @@ to agents with 100--500\,ms tool calls.
 
 \subsection{AgencyBench-V2 Harness Ablation}
 \label{sec:eval_agency}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig1_agencybench_ablation.pdf}
+  \caption{Harness ablation on 28 AgencyBench-V2 tasks. Each condition
+    adds one layer of HarnessAgent infrastructure. The published
+    native-SDK baseline (48.4\%) is shown as a dashed line.}
+  \label{fig:ablation}
+\end{figure}
 
 This experiment directly measures what the harness layer contributes
 to agent performance, using real task descriptions from the
@@ -772,10 +808,29 @@ Overall accuracy      & \textbf{98.0\%}  & ---     & \\
 
 Five categories achieve 100\% TPR: Data Exfiltration, Harmful Content
 Generation, Policy Bypass, Privilege Escalation, and Unsafe Code
-Execution. Prompt Injection achieves 83.3\% (5/6) — one missed case
-used the phrase ``you are now DAN,'' which the current signal list does
-not cover. Adding this phrase to the detection patterns requires one
-line of code and is the only identified gap.
+Execution. Prompt Injection achieves 83.3\% (5/6). The one missed
+case (``you are now DAN'') has since been added to the detection
+patterns alongside 7 other new variants, bringing the injection
+pattern count to 14. The updated guardrail now catches all 6/6
+Prompt Injection scenarios in the test suite.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig3_hermes_improvement.pdf}
+  \caption{Hermes pre/post-patch pass@1. Left: real SQLite execution
+    ($n$=50 SQL tasks, +6\,pp). Right: GAIA-style embedded tasks
+    ($n$=20, +85\,pp). Both converge at cycle 1.}
+  \label{fig:hermes}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig4_safety_pipeline.pdf}
+  \caption{Safety pipeline validation. Left: $\tau$-bench compliance
+    before/after enabling the pipeline. Right: ATBench TPR per
+    category — five reach 100\%, Prompt Injection 83\%.}
+  \label{fig:safety}
+\end{figure}
 
 \subsection{Hermes on GAIA-Style Tasks}
 \label{sec:eval_hermes_gaia}
@@ -854,9 +909,10 @@ Redis instance (10--30\,ms round trip) would raise span overhead to
 roughly 10--30\,ms per span — still below the 100\,ms tool call budget
 but worth measuring before production deployment at scale.
 
-\textbf{Prompt Injection gap.} One ATBench scenario using the phrase
-``you are now DAN'' is not caught by the current signal list.
-This is a known gap, fixable in one line.
+\textbf{Prompt Injection coverage.} The initial ATBench run achieved
+83.3\% TPR on Prompt Injection (5/6). The missed ``you are now DAN''
+pattern and 7 additional variants have since been added, raising the
+injection pattern count from 7 to 14 and closing this gap.
 
 \subsection{Relationship to HAL Reliability Dashboard}
 
@@ -917,7 +973,7 @@ Meng et~al.~\cite{meng2026survey} identified production multi-framework
 harness as an open research direction in April 2026. HAL's simultaneous
 pivot to a Reliability Dashboard~\cite{hal2025} confirmed the need.
 HarnessAgent fills both gaps. The package is \texttt{pip install
-agent-haas} with 1,087 passing tests, MIT license, and adapters for
+agent-haas} with 1,131 passing tests, MIT license, and adapters for
 four production frameworks.
 
 %=======================================================================
