@@ -23,7 +23,7 @@
 \usepackage{tabularx}
 \usepackage{balance}
 \usepackage{tikz}
-\usetikzlibrary{arrows.meta, positioning, shapes.geometric, backgrounds, fit}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, backgrounds, fit, calc}
 
 \hypersetup{
   colorlinks=true,
@@ -224,13 +224,13 @@ Table~\ref{tab:comparison} summarizes the capability gap.
 \caption{Capability Comparison of Production Agent Infrastructure}
 \label{tab:comparison}
 \centering
-\small
-\setlength{\tabcolsep}{3pt}
+\scriptsize
+\setlength{\tabcolsep}{2pt}
 \begin{tabular}{lcccccc}
 \toprule
 \textbf{Capability} & \rotatebox{70}{\textbf{LangSmith}} &
   \rotatebox{70}{\textbf{Portkey}} &
-  \rotatebox{70}{\textbf{LG Platform}} &
+  \rotatebox{70}{\textbf{LG Plat.}} &
   \rotatebox{70}{\textbf{Mem0}} &
   \rotatebox{70}{\textbf{HarnessAgent}} \\
 \midrule
@@ -458,10 +458,11 @@ Each adapter exposes four hooks:
 
 \begin{lstlisting}[language=Python, caption={Adapter interface}]
 class FrameworkAdapter(ABC):
-    async def run(self, ctx, input) -> AsyncIterator[StepEvent]: ...
+    async def run(self, ctx, inp
+        ) -> AsyncIterator[StepEvent]: ...
     async def get_result(self) -> FrameworkResult: ...
-    def attach_harness(self, safety, cost_tracker, audit): ...
-    def attach_mcp(self, mcp_client, tool_names=None): ...
+    def attach_harness(self, safety, cost_tracker): ...
+    def attach_mcp(self, client, names=None): ...
 \end{lstlisting}
 
 Adapters are provided for LangGraph, AutoGen, CrewAI, and Agno. Each
@@ -518,7 +519,7 @@ Real-execution benchmarks are 7.1--7.4 and 7.9--7.10.
   \texttt{benchmarks/results/*.json})}
 \label{tab:benchmarks}
 \centering
-\small
+\resizebox{\textwidth}{!}{%
 \setlength{\tabcolsep}{5pt}
 \begin{tabular}{llllll}
 \toprule
@@ -573,7 +574,8 @@ Real-execution benchmarks are 7.1--7.4 and 7.9--7.10.
     & & + Schema + verifier (B) & \textbf{44.9\%} (+8.2\,pp) & & \\
     & & + Self-correction (C) & \textbf{49.0\%} (+12.3\,pp total) & & \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}% end resizebox
 \end{table*}
 
 \begin{figure}[t]
@@ -715,10 +717,10 @@ replaced by the scoring model (same approach as bench\_hermes.py).
 \textbf{Results.}
 
 \begin{table}[h]
-\centering\small
-\caption{AgencyBench-V2 Ablation (28 regular tasks, seed\,=\,42)}
+\centering\scriptsize
+\caption{AgencyBench-V2 Ablation (28 tasks, seed\,=\,42)}
 \label{tab:agency}
-\setlength{\tabcolsep}{4pt}
+\setlength{\tabcolsep}{3pt}
 \begin{tabular}{lrrl}
 \toprule
 \textbf{Condition} & \textbf{Pass Rate} &
@@ -728,8 +730,7 @@ A  Bare (no harness)   & 50.0\% & 5.76 & $+$1.6\,pp  \\
 B  +HarnessAgent infra & 60.7\% & 6.20 & $+$12.3\,pp \\
 C  Full HaaS           & 71.4\% & 6.55 & $+$23.0\,pp \\
 \midrule
-\multicolumn{4}{l}{\small Reference: AgencyBench native-SDK baseline
-  48.4\%~\cite{agencybench2026}} \\
+\multicolumn{4}{l}{\scriptsize Ref: native-SDK baseline 48.4\%~\cite{agencybench2026}} \\
 \bottomrule
 \end{tabular}
 \end{table}
