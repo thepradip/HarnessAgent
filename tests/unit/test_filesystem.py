@@ -635,3 +635,78 @@ async def test_run_code_tool_skips_dead_session(tmp_path):
 
     dead_session.run_code.assert_not_called()
     assert result.data is not None
+
+
+# ---------------------------------------------------------------------------
+# Sandbox security limits — cpu_time, disk_quota, pids_limit, exec timeout wrap
+# ---------------------------------------------------------------------------
+
+def test_docker_sandbox_includes_cpu_time_limit():
+    """DockerSandbox docker run command must include --ulimit=cpu=<N>:<N>."""
+    from harness.filesystem.sandbox import DockerSandbox
+    sb = DockerSandbox(cpu_time_seconds=45)
+    # Inspect the command built inside run_code by checking __init__ attributes
+    assert sb._cpu_time == 45
+    assert sb._fsize_blocks == (512 * 1024 * 1024) // 512  # default 512 MiB
+
+
+def test_docker_sandbox_custom_disk_quota():
+    """DockerSandbox disk_quota_mb converts correctly to 512-byte blocks."""
+    from harness.filesystem.sandbox import DockerSandbox
+    sb = DockerSandbox(disk_quota_mb=256)
+    expected_blocks = (256 * 1024 * 1024) // 512  # 524288 blocks
+    assert sb._fsize_blocks == expected_blocks
+
+
+def test_docker_sandbox_pids_limit_stored():
+    """DockerSandbox stores pids_limit for injection into docker run."""
+    from harness.filesystem.sandbox import DockerSandbox
+    sb = DockerSandbox(pids_limit=32)
+    assert sb._pids_limit == 32
+
+
+def test_session_sandbox_timeout_wrap_uses_timeout_command(tmp_path):
+    """SessionDockerSandbox exec must wrap python with `timeout -k <grace> <N>`."""
+    from harness.filesystem.sandbox import SessionDockerSandbox
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    sb = SessionDockerSandbox(workspace_path=tmp_path, timeout=20.0)
+    sb._container_id = "abc123"
+
+    captured_cmd: list = []
+
+    async def _fake_exec(*args, **kwargs):
+        captured_cmd.extend(args)
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        return proc
+
+    async def _run():
+        with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+            await sb.run_code("print('hi')")
+
+    asyncio.get_event_loop().run_until_complete(_run())
+
+    cmd_str = " ".join(str(c) for c in captured_cmd)
+    assert "timeout" in cmd_str, "exec must use timeout command inside container"
+    assert "-k" in cmd_str, "timeout must pass SIGKILL grace flag"
+
+
+def test_session_sandbox_stores_limits():
+    """SessionDockerSandbox stores all three new limit params."""
+    import tempfile
+    from pathlib import Path
+    from harness.filesystem.sandbox import SessionDockerSandbox
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sb = SessionDockerSandbox(
+            workspace_path=Path(tmp),
+            cpu_time_seconds=30,
+            disk_quota_mb=128,
+            pids_limit=16,
+        )
+    assert sb._cpu_time == 30
+    assert sb._fsize_blocks == (128 * 1024 * 1024) // 512
+    assert sb._pids_limit == 16
