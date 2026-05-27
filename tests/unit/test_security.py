@@ -470,14 +470,15 @@ def test_has_secrets_false():
 # ===========================================================================
 
 @pytest.mark.asyncio
-async def test_pipeline_check_output_warns_on_leaked_key():
+async def test_pipeline_check_output_blocks_on_leaked_key():
+    """Output containing API keys must be BLOCKED (not just warned) — updated behaviour."""
     from harness.safety.pipeline_factory import _HardConstraintPipeline
     pipeline = _HardConstraintPipeline()
     key = f"sk-ant-api03-{'w' * 25}"
     result = await pipeline.check_output({"content": f"Here is your key: {key}"})
-    # Does NOT block (we redact, not block) but records the reason
-    assert result.blocked is False
-    assert "secret_detected" in (result.reason or "")
+    # Now blocks rather than just warning — secret must never reach the caller
+    assert result.blocked is True
+    assert result.reason  # reason must be non-empty
 
 
 @pytest.mark.asyncio
