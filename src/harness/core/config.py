@@ -110,6 +110,12 @@ class Settings(BaseSettings):
     hermes_min_errors_to_trigger: int = 5
     hermes_patch_score_threshold: float = 0.7
 
+    # Run the full evaluator-backed HermesLoop in the background worker: patches
+    # are scored by replaying failing tasks (AgentRunner + Evaluator) before the
+    # apply/rollback gate. Required for GEPA in production. When False the worker
+    # uses the lightweight generate-and-queue path.
+    hermes_use_evaluator: bool = False
+
     # Prompt-patch generation strategy:
     #   "heuristic" — the default LLM/error-analysis PatchGenerator (one targeted edit).
     #   "gepa"      — GEPA reflective prompt evolution (population + Pareto selection)

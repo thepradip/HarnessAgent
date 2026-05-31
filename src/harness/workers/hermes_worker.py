@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from types import SimpleNamespace
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -81,19 +83,6 @@ async def run_hermes_cycle(config_override: dict | None = None) -> None:
 
     patch_store = _RedisPatchStore(redis_client)
     strategy = config_override.get("hermes_strategy", getattr(cfg, "hermes_strategy", "heuristic"))
-    # GEPA needs an Evaluator metric to score evolved prompts. This simplified
-    # worker does not construct one (it applies/queues without replaying tasks),
-    # so build_patch_generator transparently falls back to the heuristic generator
-    # when strategy="gepa" and evaluator is None. The evaluator-backed HermesLoop
-    # path activates GEPA by passing strategy and an Evaluator to the same factory.
-    patch_generator = build_patch_generator(
-        strategy,
-        llm_provider=llm,
-        prompt_manager=prompt_manager,
-        evaluator=None,
-        config=cfg,
-        patch_store=patch_store,
-    )
 
     agent_types = config_override.get(
         "agent_types", ["sql", "code", "research", "orchestrator"]
@@ -102,8 +91,63 @@ async def run_hermes_cycle(config_override: dict | None = None) -> None:
         "hermes_min_errors_to_trigger", cfg.hermes_min_errors_to_trigger
     )
     auto_apply = config_override.get("hermes_auto_apply", cfg.hermes_auto_apply)
-    score_threshold = config_override.get(
-        "hermes_patch_score_threshold", cfg.hermes_patch_score_threshold
+
+    # Evaluator-backed path: run the full HermesLoop, which scores patches by
+    # replaying failing tasks (AgentRunner + Evaluator) before the apply/rollback
+    # gate. This is what makes GEPA usable in production. On any setup failure we
+    # fall back to the lightweight generate-and-queue path below.
+    use_evaluator = config_override.get(
+        "hermes_use_evaluator", getattr(cfg, "hermes_use_evaluator", False)
+    )
+    if use_evaluator:
+        try:
+            hermes = build_hermes_loop(
+                redis_client=redis_client,
+                cfg=cfg,
+                llm_provider=llm,
+                error_collector=error_collector,
+                prompt_manager=prompt_manager,
+                patch_store=patch_store,
+                strategy=strategy,
+                config_override=config_override,
+            )
+            logger.info(
+                "Hermes (evaluator-backed) cycle starting: strategy=%s agent_types=%s",
+                strategy,
+                agent_types,
+            )
+            loop_outcomes = await hermes.run_all_agents(agent_types)
+            logger.info(
+                "Hermes (evaluator-backed) cycle complete: %d outcome(s)",
+                len(loop_outcomes),
+            )
+            for loop_outcome in loop_outcomes:
+                logger.info(
+                    "  %s: applied=%s — %s",
+                    getattr(getattr(loop_outcome, "patch", None), "agent_type", "?"),
+                    getattr(loop_outcome, "applied", False),
+                    getattr(loop_outcome, "reason", ""),
+                )
+            await redis_client.aclose()
+            return
+        except Exception as exc:
+            logger.exception(
+                "Hermes: evaluator-backed loop failed (%s) — falling back to the "
+                "lightweight generate-and-queue path.",
+                exc,
+            )
+
+    # GEPA needs an Evaluator metric to score evolved prompts. This lightweight
+    # path does not construct one (it applies/queues without replaying tasks),
+    # so build_patch_generator transparently falls back to the heuristic generator
+    # when strategy="gepa" and evaluator is None.
+    patch_generator = build_patch_generator(
+        strategy,
+        llm_provider=llm,
+        prompt_manager=prompt_manager,
+        evaluator=None,
+        config=cfg,
+        patch_store=patch_store,
     )
 
     logger.info(
@@ -206,6 +250,107 @@ async def run_hermes_cycle(config_override: dict | None = None) -> None:
         logger.info("  %s: %s", outcome.get("agent_type"), outcome.get("action"))
 
     await redis_client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Evaluator-backed HermesLoop assembly
+# ---------------------------------------------------------------------------
+
+
+def build_hermes_loop(
+    *,
+    redis_client: Any,
+    cfg: Any,
+    llm_provider: Any,
+    error_collector: Any,
+    prompt_manager: Any,
+    patch_store: Any,
+    strategy: str,
+    config_override: dict[str, Any] | None = None,
+    agent_factory: Any = None,
+) -> Any:
+    """Assemble a fully-wired, evaluator-backed :class:`HermesLoop`.
+
+    Builds the AgentRunner + Evaluator (which replay failing tasks to score
+    patches), the strategy-selected patch generator *with* that evaluator (so
+    GEPA can optimize against it), an OnlineLearningMonitor for rollback, and an
+    optional MLflow tracer. The agent factory is reused from the same builder the
+    API server uses, so replayed runs match production agent construction.
+
+    Args:
+        redis_client:    Async Redis client.
+        cfg:             Settings.
+        llm_provider:    LLM provider (reflection LM for GEPA / patch LM otherwise).
+        error_collector: Shared ErrorCollector.
+        prompt_manager:  PromptManager (also serves as the prompt store for the loop).
+        patch_store:     Store with ``async save(patch)``.
+        strategy:        ``"gepa"`` or ``"heuristic"``.
+        config_override: Optional overrides (e.g. ``workspace_base_path``).
+        agent_factory:   Optional ``Callable(agent_type) -> agent``. When omitted,
+            ``build_agent_factory(cfg)`` is used (the production builder).
+
+    Returns:
+        A ready-to-run :class:`HermesLoop`.
+    """
+    from harness.improvement.evaluator import Evaluator
+    from harness.improvement.gepa import build_patch_generator
+    from harness.improvement.hermes import HermesLoop
+    from harness.improvement.online_monitor import OnlineLearningMonitor
+    from harness.observability.metrics import get_prometheus_metrics
+    from harness.orchestrator.runner import AgentRunner
+
+    config_override = config_override or {}
+
+    if agent_factory is None:
+        from harness.workers.agent_worker import build_agent_factory
+        agent_factory = build_agent_factory(cfg)
+
+    agent_runner = AgentRunner(
+        redis=redis_client,
+        agent_factory=agent_factory,
+        workspace_base=config_override.get(
+            "workspace_base_path", getattr(cfg, "workspace_base_path", "/workspaces")
+        ),
+        error_collector=error_collector,
+    )
+    evaluator = Evaluator(agent_runner=agent_runner, error_collector=error_collector)
+
+    generator = build_patch_generator(
+        strategy,
+        llm_provider=llm_provider,
+        prompt_manager=prompt_manager,
+        evaluator=evaluator,
+        config=cfg,
+        patch_store=patch_store,
+    )
+
+    online_monitor = OnlineLearningMonitor(redis=redis_client)
+
+    mlflow_tracer = None
+    if getattr(cfg, "hermes_gepa_use_mlflow", False):
+        try:
+            from harness.observability.mlflow_tracer import MLflowAgentTracer
+            mlflow_tracer = MLflowAgentTracer(
+                tracking_uri=cfg.mlflow_tracking_uri,
+                experiment_name=cfg.mlflow_experiment_name,
+            )
+        except Exception as exc:
+            logger.debug("Hermes: MLflow tracer unavailable: %s", exc)
+
+    # HermesLoop reads counters off the metrics object via getattr; expose the
+    # Prometheus registry's named metrics as attributes.
+    metrics = SimpleNamespace(**get_prometheus_metrics())
+
+    return HermesLoop(
+        collector=error_collector,
+        generator=generator,
+        evaluator=evaluator,
+        prompt_store=prompt_manager,
+        metrics=metrics,
+        config=cfg,
+        online_monitor=online_monitor,
+        mlflow_tracer=mlflow_tracer,
+    )
 
 
 # ---------------------------------------------------------------------------
