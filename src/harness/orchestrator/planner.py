@@ -8,6 +8,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from harness.core.prompt_overrides import gepa_override
+
 logger = logging.getLogger(__name__)
 
 _PLAN_PROMPT_TEMPLATE = """\
@@ -160,10 +162,18 @@ class Planner:
             ValueError: If the LLM output cannot be parsed or the plan has cycles.
         """
         agents_str = ", ".join(f'"{a}"' for a in available_agents)
-        prompt = _PLAN_PROMPT_TEMPLATE.format(
-            available_agents=agents_str,
-            task=task,
-        )
+        # Multi-agent planning/coordination prompt — optimizable as the
+        # "planner_prompt" component (GEPA injects an override via ctx.metadata).
+        # Fall back to the default template if an evolved one breaks .format().
+        template = gepa_override(ctx, "planner_prompt", _PLAN_PROMPT_TEMPLATE)
+        try:
+            prompt = template.format(available_agents=agents_str, task=task)
+        except (KeyError, IndexError, ValueError):
+            logger.warning("planner_prompt override failed to format; using default")
+            prompt = _PLAN_PROMPT_TEMPLATE.format(
+                available_agents=agents_str,
+                task=task,
+            )
 
         logger.info(
             "Planning task (run_id=%s, agents=%s): %.100s",

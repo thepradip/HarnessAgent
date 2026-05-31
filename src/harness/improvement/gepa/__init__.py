@@ -18,7 +18,27 @@ from harness.improvement.patch_generator import PatchGenerator
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["GepaPatchGenerator", "build_patch_generator"]
+__all__ = [
+    "EvalDatasetGepaAdapter",
+    "EvalOptimizationResult",
+    "GepaPatchGenerator",
+    "build_patch_generator",
+    "optimize_prompts_on_dataset",
+]
+
+
+def __getattr__(name: str) -> Any:
+    # Lazy re-export of the eval-optimizer surface to avoid importing the eval
+    # stack (datasets/scorers) unless it's actually used.
+    if name in ("optimize_prompts_on_dataset", "EvalOptimizationResult"):
+        from harness.improvement.gepa import eval_optimizer
+
+        return getattr(eval_optimizer, name)
+    if name == "EvalDatasetGepaAdapter":
+        from harness.improvement.gepa.eval_adapter import EvalDatasetGepaAdapter
+
+        return EvalDatasetGepaAdapter
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def build_patch_generator(

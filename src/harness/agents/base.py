@@ -27,6 +27,7 @@ from harness.core.errors import (
     SafetyViolation,
     ToolError,
 )
+from harness.core.prompt_overrides import gepa_override
 from harness.observability.failures import StepFailure
 from harness.observability.trace_schema import SpanKind, SpanStatus
 
@@ -224,7 +225,9 @@ class BaseAgent:
 
                     # 3c. Build messages
                     messages = self.build_messages(ctx, history, retrieval_context, skill_context)
-                    system_prompt = self.build_system_prompt(ctx)
+                    system_prompt = gepa_override(
+                        ctx, "system_prompt", self.build_system_prompt(ctx)
+                    )
 
                     # 3d. LLM call with OTel span
                     async with self._llm_span(ctx) as llm_span_id:
@@ -1272,15 +1275,20 @@ class BaseAgent:
                 if isinstance(m.get("content"), str)
             )
             if turns_text:
+                # Context-compression prompt — optimizable as the "context_summary"
+                # component (GEPA injects an override via ctx.metadata).
+                summary_instruction = gepa_override(
+                    ctx,
+                    "context_summary",
+                    "Summarize the following conversation history concisely "
+                    "in 3-5 sentences, preserving key decisions, findings, "
+                    "and tool call outcomes:",
+                )
                 summary_response = await self._llm_router.complete(
                     messages=[
                         {
                             "role": "user",
-                            "content": (
-                                "Summarize the following conversation history concisely "
-                                "in 3-5 sentences, preserving key decisions, findings, "
-                                "and tool call outcomes:\n\n" + turns_text
-                            ),
+                            "content": summary_instruction + "\n\n" + turns_text,
                         }
                     ],
                     system="You are a helpful assistant that summarizes conversations concisely.",
