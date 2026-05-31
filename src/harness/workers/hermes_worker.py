@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +14,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-async def run_hermes_cycle(config_override: Optional[dict] = None) -> None:
+async def run_hermes_cycle(config_override: dict | None = None) -> None:
     """Execute one Hermes self-improvement cycle for all registered agent types.
 
     Initialises all required dependencies (Redis, LLM, prompt manager,
@@ -28,11 +27,13 @@ async def run_hermes_cycle(config_override: Optional[dict] = None) -> None:
     config_override = config_override or {}
 
     import redis.asyncio as aioredis
+
     from harness.core.config import get_config
     from harness.improvement.error_collector import ErrorCollector
-    from harness.improvement.patch_generator import PatchGenerator, Patch
-    from harness.prompts.store import PromptStore
+    from harness.improvement.gepa import build_patch_generator
+    from harness.improvement.patch_generator import Patch
     from harness.prompts.manager import PromptManager
+    from harness.prompts.store import PromptStore
 
     cfg = get_config()
     redis_url = config_override.get("redis_url", cfg.redis_url)
@@ -79,9 +80,18 @@ async def run_hermes_cycle(config_override: Optional[dict] = None) -> None:
             await self._r.set(f"{self._PREFIX}:{patch.patch_id}", patch.to_json())
 
     patch_store = _RedisPatchStore(redis_client)
-    patch_generator = PatchGenerator(
+    strategy = config_override.get("hermes_strategy", getattr(cfg, "hermes_strategy", "heuristic"))
+    # GEPA needs an Evaluator metric to score evolved prompts. This simplified
+    # worker does not construct one (it applies/queues without replaying tasks),
+    # so build_patch_generator transparently falls back to the heuristic generator
+    # when strategy="gepa" and evaluator is None. The evaluator-backed HermesLoop
+    # path activates GEPA by passing strategy and an Evaluator to the same factory.
+    patch_generator = build_patch_generator(
+        strategy,
         llm_provider=llm,
         prompt_manager=prompt_manager,
+        evaluator=None,
+        config=cfg,
         patch_store=patch_store,
     )
 
@@ -204,7 +214,7 @@ async def run_hermes_cycle(config_override: Optional[dict] = None) -> None:
 
 
 def start_hermes_worker(
-    interval_seconds: Optional[float] = None,
+    interval_seconds: float | None = None,
     run_once: bool = False,
 ) -> None:
     """Start the Hermes background scheduler.

@@ -110,6 +110,24 @@ class Settings(BaseSettings):
     hermes_min_errors_to_trigger: int = 5
     hermes_patch_score_threshold: float = 0.7
 
+    # Prompt-patch generation strategy:
+    #   "heuristic" — the default LLM/error-analysis PatchGenerator (one targeted edit).
+    #   "gepa"      — GEPA reflective prompt evolution (population + Pareto selection)
+    #                 over the same Evaluator metric. Requires the ``gepa`` extra and
+    #                 an Evaluator-backed loop; falls back to "heuristic" otherwise.
+    hermes_strategy: str = "heuristic"
+    # Max metric calls (candidate evaluations) GEPA may spend per cycle. Each call
+    # replays one failing task through the Evaluator, so keep this modest.
+    hermes_gepa_budget: int = 30
+    # Max tokens for GEPA's reflection (teacher) LM when proposing a new prompt.
+    hermes_gepa_reflection_max_tokens: int = 4096
+    # Minimum sampled errors required before GEPA runs; below this it is not worth
+    # the rollout cost and the loop falls back to the heuristic generator.
+    hermes_gepa_min_train: int = 3
+    # Log GEPA's optimization progress (params, per-step scores, summary) to MLflow
+    # using the ``mlflow_tracking_uri`` / ``mlflow_experiment_name`` settings above.
+    hermes_gepa_use_mlflow: bool = False
+
     # -------------------------------------------------------------------------
     # Auth
     # -------------------------------------------------------------------------
