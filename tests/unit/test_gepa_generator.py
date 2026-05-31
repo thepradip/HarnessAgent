@@ -100,6 +100,36 @@ def test_factory_gepa_without_evaluator_falls_back():
     assert isinstance(gen, PatchGenerator)
 
 
+def test_gepa_generator_exposes_specialized_methods_for_routing():
+    """HermesLoop probes these via hasattr; GEPA must keep them so timeout/safety/
+    tool failures still get targeted patches instead of a prompt evolution."""
+    gen = GepaPatchGenerator(
+        llm_provider=MagicMock(), prompt_manager=MagicMock(), evaluator=MagicMock()
+    )
+    assert hasattr(gen, "generate_retry_patch")
+    assert hasattr(gen, "generate_permission_patch")
+    assert hasattr(gen, "generate_tool_patch")
+
+
+@pytest.mark.asyncio
+async def test_gepa_generator_delegates_specialized_patches_to_heuristic():
+    gen = GepaPatchGenerator(
+        llm_provider=MagicMock(), prompt_manager=MagicMock(), evaluator=MagicMock()
+    )
+    sentinel = object()
+    gen._heuristic.generate_retry_patch = AsyncMock(return_value=sentinel)
+    gen._heuristic.generate_permission_patch = AsyncMock(return_value=sentinel)
+    gen._heuristic.generate_tool_patch = AsyncMock(return_value=sentinel)
+
+    errs = [_make_error()]
+    assert await gen.generate_retry_patch("sql", errs) is sentinel
+    assert await gen.generate_permission_patch("sql", errs) is sentinel
+    assert await gen.generate_tool_patch("sql", errs) is sentinel
+    gen._heuristic.generate_retry_patch.assert_awaited_once()
+    gen._heuristic.generate_permission_patch.assert_awaited_once()
+    gen._heuristic.generate_tool_patch.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # Async / thread bridge
 # ---------------------------------------------------------------------------

@@ -24,13 +24,20 @@ from typing import Any
 
 from harness.improvement.gepa.adapter import COMPONENT, HarnessGepaAdapter
 from harness.improvement.gepa.reflection import ProviderReflectionLM, make_coro_runner
-from harness.improvement.patch_generator import Patch
+from harness.improvement.patch_generator import Patch, PatchGenerator
 
 logger = logging.getLogger(__name__)
 
 
 class GepaPatchGenerator:
     """Generate prompt patches via GEPA reflective prompt evolution.
+
+    GEPA owns only the *prompt* patch path (``generate``). The HermesLoop also
+    routes timeout/safety/tool-dominant failures to specialized non-prompt
+    generators (``generate_retry_patch`` / ``generate_permission_patch`` /
+    ``generate_tool_patch``); those are delegated to an inner heuristic
+    :class:`PatchGenerator` so a tool timeout still gets a one-line config bump
+    instead of an expensive prompt evolution.
 
     Args:
         llm_provider:   Provider used as GEPA's reflection (teacher) LM. Must expose
@@ -57,6 +64,12 @@ class GepaPatchGenerator:
         self._evaluator = evaluator
         self._config = config
         self._patch_store = patch_store
+        # Specialized non-prompt patches (timeout/permission/tool) stay heuristic.
+        self._heuristic = PatchGenerator(
+            llm_provider=llm_provider,
+            prompt_manager=prompt_manager,
+            patch_store=patch_store,
+        )
 
         self._budget: int = _cfg(config, "hermes_gepa_budget", 30)
         self._reflection_max_tokens: int = _cfg(
@@ -197,6 +210,33 @@ class GepaPatchGenerator:
             f"{best_score:.3f}" if best_score is not None else "n/a",
         )
         return patch
+
+    # ------------------------------------------------------------------
+    # Specialized non-prompt patches — delegated to the heuristic generator.
+    # The HermesLoop routes timeout/safety/tool-dominant batches here (probed
+    # via hasattr); keeping these means GEPA only handles the prompt path.
+    # ------------------------------------------------------------------
+
+    async def generate_retry_patch(
+        self, agent_type: str, errors: list[Any], tool_registry: Any | None = None
+    ) -> Patch | None:
+        return await self._heuristic.generate_retry_patch(
+            agent_type=agent_type, errors=errors, tool_registry=tool_registry
+        )
+
+    async def generate_permission_patch(
+        self, agent_type: str, errors: list[Any]
+    ) -> Patch | None:
+        return await self._heuristic.generate_permission_patch(
+            agent_type=agent_type, errors=errors
+        )
+
+    async def generate_tool_patch(
+        self, agent_type: str, errors: list[Any], tool_registry: Any | None = None
+    ) -> Patch | None:
+        return await self._heuristic.generate_tool_patch(
+            agent_type=agent_type, errors=errors, tool_registry=tool_registry
+        )
 
 
 def _cfg(config: Any, name: str, default: int) -> int:
