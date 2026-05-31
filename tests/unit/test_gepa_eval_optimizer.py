@@ -166,3 +166,68 @@ async def test_optimize_requires_seed():
             eval_runner=MagicMock(), dataset=_dataset(1), llm_provider=MagicMock(),
             seed_prompts={},
         )
+
+
+# ---------------------------------------------------------------------------
+# Component wiring: planner (inter-agent coordination) honors its override
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_planner_uses_planner_prompt_override():
+    from harness.orchestrator.planner import Planner
+
+    captured: dict[str, str] = {}
+
+    async def _complete(messages, **kwargs):
+        captured["prompt"] = messages[0]["content"]
+        return SimpleNamespace(
+            content='[{"id": "t1", "agent_type": "sql", "task": "x", '
+            '"depends_on": [], "metadata": {}}]'
+        )
+
+    llm = MagicMock()
+    llm.complete = _complete
+    planner = Planner(llm)
+
+    ctx = SimpleNamespace(
+        run_id="r1",
+        metadata={
+            OVERRIDES_KEY: {
+                "planner_prompt": "OVERRIDDEN PLANNER agents={available_agents} task={task}"
+            }
+        },
+    )
+    plan = await planner.plan("decompose me", ["sql", "code"], ctx)
+
+    assert captured["prompt"].startswith("OVERRIDDEN PLANNER")
+    assert "decompose me" in captured["prompt"]
+    assert len(plan.subtasks) == 1
+
+
+@pytest.mark.asyncio
+async def test_planner_falls_back_on_bad_override():
+    """A broken override template (stray placeholder) must not crash planning."""
+    from harness.orchestrator.planner import Planner
+
+    captured: dict[str, str] = {}
+
+    async def _complete(messages, **kwargs):
+        captured["prompt"] = messages[0]["content"]
+        return SimpleNamespace(
+            content='[{"id": "t1", "agent_type": "sql", "task": "x", '
+            '"depends_on": [], "metadata": {}}]'
+        )
+
+    llm = MagicMock()
+    llm.complete = _complete
+    planner = Planner(llm)
+
+    ctx = SimpleNamespace(
+        run_id="r1",
+        metadata={OVERRIDES_KEY: {"planner_prompt": "broken {unknown_placeholder}"}},
+    )
+    plan = await planner.plan("task", ["sql"], ctx)
+    # Fell back to the default template (which contains the decomposition framing).
+    assert "task decomposition specialist" in captured["prompt"].lower()
+    assert len(plan.subtasks) == 1
