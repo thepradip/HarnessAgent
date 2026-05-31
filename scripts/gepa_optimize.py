@@ -1,23 +1,34 @@
 #!/usr/bin/env python
-"""Optimize agent prompt components on the BIRD text-to-SQL benchmark with GEPA.
+"""Optimize agent prompt components on a benchmark with GEPA (gold-scored).
 
-End-to-end experiment driver:
+Benchmark-agnostic experiment driver:
 
-  1. Load BIRD (dev split) via the existing benchmark loader.
+  1. Load a benchmark via the existing loaders (GSM8K / HumanEval / Spider / BIRD).
   2. Build the production agent stack (AgentRunner + agent factory + EvalRunner).
   3. Seed the requested prompt components (system_prompt / planner_prompt /
      context_summary) from their current values.
-  4. Run GEPA against the gold-labeled dataset using the chosen SQL scorer.
-  5. Report baseline vs optimized score and write the evolved components to disk.
+  4. Run GEPA against the gold-labeled dataset using the benchmark's scorer.
+  5. Report baseline vs optimized score on a held-out split and write the evolved
+     components to disk.
 
-Requires a real agent runtime (LLM credentials, Redis). Intended for an offline
-optimization/CI job, not the request path.
+Benchmark notes (why the default is GSM8K, not BIRD):
+  - gsm8k     reasoning; gold = final number → exact-match is a TRUE correctness
+              signal with no sandbox. Best default.
+  - humaneval code generation; for real pass@1 use execution scoring (a sandbox);
+              the default exact-match only checks textual similarity.
+  - spider/bird  text-to-SQL; the AST-equivalence scorer is a proxy — real scoring
+              needs DB execution. BIRD in particular is messy/real-world DBs.
+
+Requires a real agent runtime (LLM credentials, Redis). Offline job, not the
+request path.
 
 Examples
 --------
-    python scripts/gepa_bird_optimize.py --bird-dir /data/bird --n-samples 30 --budget 80
-    python scripts/gepa_bird_optimize.py --bird-dir /data/bird \
-        --components system_prompt,planner_prompt --scorer sql_equiv --mlflow
+    python scripts/gepa_optimize.py --benchmark gsm8k --data-dir /data/gsm8k.jsonl \
+        --n-samples 40 --budget 80
+    python scripts/gepa_optimize.py --benchmark humaneval --data-dir /data/humaneval.jsonl \
+        --components system_prompt,context_summary --mlflow
+    python scripts/gepa_optimize.py --benchmark bird --data-dir /data/bird --scorer sql_equiv
 """
 
 from __future__ import annotations
@@ -30,7 +41,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("gepa_bird")
+logger = logging.getLogger("gepa_optimize")
 
 # Default seed for the context-compression component (mirrors BaseAgent._fit_history).
 _DEFAULT_CONTEXT_SUMMARY = (
@@ -38,11 +49,19 @@ _DEFAULT_CONTEXT_SUMMARY = (
     "preserving key decisions, findings, and tool call outcomes:"
 )
 
+# Per-benchmark defaults: agent_type, default scorer, and the default split.
+BENCHMARKS: dict[str, dict[str, Any]] = {
+    "gsm8k": {"agent_type": "code", "scorer": "exact", "split": "test"},
+    "humaneval": {"agent_type": "code", "scorer": "exact", "split": None},
+    "spider": {"agent_type": "sql", "scorer": "sql_equiv", "split": "dev"},
+    "bird": {"agent_type": "sql", "scorer": "sql_equiv", "split": "dev"},
+}
+
 
 def pick_scorer(name: str) -> Callable[[str, str], float]:
     """Return an EvalRunner-compatible scorer callable for ``name``.
 
-    - ``exact``:     substring/exact-match on the gold SQL text (strict).
+    - ``exact``:     substring/exact-match on the gold text.
     - ``sql_equiv``: SQL AST equivalence (ignores formatting/aliasing).
     """
     from harness.eval.scorers import score_exact_match, score_sql_equivalence
@@ -52,6 +71,22 @@ def pick_scorer(name: str) -> Callable[[str, str], float]:
     if name == "exact":
         return lambda output, expected: score_exact_match(output or "", expected or "")
     raise ValueError(f"unknown scorer {name!r} (choose: exact, sql_equiv)")
+
+
+def load_benchmark(name: str, data_dir: str, split: str | None, n_samples: int | None) -> Any:
+    """Load ``name`` via the matching benchmark loader, normalizing signatures."""
+    from harness.eval import benchmark_loaders as bl
+
+    eff_split = split or BENCHMARKS[name]["split"]
+    if name == "spider":
+        return bl.load_spider(data_dir, split=eff_split or "dev", n_samples=n_samples)
+    if name == "bird":
+        return bl.load_bird(data_dir, split=eff_split or "dev", n_samples=n_samples)
+    if name == "humaneval":
+        return bl.load_humaneval(data_dir, n_samples=n_samples)  # no split
+    if name == "gsm8k":
+        return bl.load_gsm8k(data_dir, split=eff_split or "test", n_samples=n_samples)
+    raise ValueError(f"unknown benchmark {name!r} (choose: {', '.join(BENCHMARKS)})")
 
 
 async def build_seed_prompts(
@@ -99,7 +134,6 @@ async def run(args: argparse.Namespace) -> int:
     import redis.asyncio as aioredis
 
     from harness.core.config import get_config
-    from harness.eval.benchmark_loaders import load_bird
     from harness.eval.runner import EvalRunner
     from harness.improvement.gepa import optimize_prompts_on_dataset
     from harness.orchestrator.runner import AgentRunner
@@ -108,14 +142,18 @@ async def run(args: argparse.Namespace) -> int:
     from harness.workers.agent_worker import build_agent_factory
 
     cfg = get_config()
+    spec = BENCHMARKS[args.benchmark]
     components = [c.strip() for c in args.components.split(",") if c.strip()]
-    scorer = pick_scorer(args.scorer)
+    scorer = pick_scorer(args.scorer or spec["scorer"])
 
-    # 1. Load BIRD
-    dataset = load_bird(args.bird_dir, split=args.split, n_samples=args.n_samples)
-    logger.info("Loaded BIRD %s: %d case(s)", args.split, len(dataset.cases))
+    # 1. Load benchmark
+    dataset = load_benchmark(args.benchmark, args.data_dir, args.split, args.n_samples)
+    agent_type = getattr(dataset, "agent_type", None) or spec["agent_type"]
+    logger.info(
+        "Loaded %s: %d case(s), agent_type=%s", args.benchmark, len(dataset.cases), agent_type
+    )
     if not dataset.cases:
-        logger.error("No cases loaded — check --bird-dir / --split.")
+        logger.error("No cases loaded — check --data-dir / --split.")
         return 2
 
     train, val = _split(dataset, args.val_frac)
@@ -131,7 +169,7 @@ async def run(args: argparse.Namespace) -> int:
     eval_runner = EvalRunner(agent_runner, llm_provider=None)
 
     # 3. Seed components + reflection LM
-    seed = await build_seed_prompts(components, dataset.agent_type, prompt_manager)
+    seed = await build_seed_prompts(components, agent_type, prompt_manager)
     logger.info("Optimizing components: %s", list(seed))
     llm = _build_llm(cfg, args)
 
@@ -159,15 +197,17 @@ async def run(args: argparse.Namespace) -> int:
     optimized = await _aggregate_score(eval_runner, val, result.components, scorer, args.tenant)
 
     # 7. Report + persist
-    print("\n==== GEPA x BIRD ====")
+    print(f"\n==== GEPA x {args.benchmark} ====")
     print(f"components      : {list(seed)}")
     print(f"train/val cases : {len(train.cases)} / {len(val.cases)}")
     print(f"metric calls    : {result.total_metric_calls}")
     print(f"baseline score  : {baseline:.3f}")
-    print(f"optimized score : {optimized:.3f}  (Δ {optimized - baseline:+.3f})")
+    print(f"optimized score : {optimized:.3f}  (delta {optimized - baseline:+.3f})")
     print(f"improved        : {result.improved}")
 
     payload = {
+        "benchmark": args.benchmark,
+        "agent_type": agent_type,
         "baseline_score": baseline,
         "optimized_score": optimized,
         "improved": result.improved,
@@ -177,7 +217,7 @@ async def run(args: argparse.Namespace) -> int:
     }
     with Path(args.output).open("w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2, ensure_ascii=False)
-    print(f"evolved prompts → {args.output}")
+    print(f"evolved prompts -> {args.output}")
 
     await redis_client.aclose()
     return 0
@@ -209,23 +249,27 @@ def _build_llm(cfg: Any, args: argparse.Namespace) -> Any:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="GEPA optimization on the BIRD benchmark.")
-    p.add_argument("--bird-dir", required=True, help="Path to the BIRD dataset directory.")
-    p.add_argument("--split", default="dev", choices=["train", "dev"])
-    p.add_argument("--n-samples", type=int, default=30, help="Cases to load (None=all).")
+    p = argparse.ArgumentParser(description="GEPA prompt optimization on a benchmark.")
+    p.add_argument("--benchmark", default="gsm8k", choices=sorted(BENCHMARKS))
+    p.add_argument("--data-dir", required=True, help="Path/dir for the benchmark data.")
+    p.add_argument("--split", default=None, help="Override the benchmark's default split.")
+    p.add_argument("--n-samples", type=int, default=40, help="Cases to load (None=all).")
     p.add_argument("--val-frac", type=float, default=0.4, help="Fraction held out for scoring.")
     p.add_argument(
         "--components",
         default="system_prompt",
         help="Comma list: system_prompt,planner_prompt,context_summary",
     )
-    p.add_argument("--scorer", default="sql_equiv", choices=["exact", "sql_equiv"])
+    p.add_argument(
+        "--scorer", default=None, choices=["exact", "sql_equiv"],
+        help="Override the benchmark's default scorer.",
+    )
     p.add_argument("--budget", type=int, default=60, help="Max candidate evaluations.")
     p.add_argument("--concurrency", type=int, default=3)
     p.add_argument("--reflection-model", default=None, help="Override teacher LM model.")
-    p.add_argument("--tenant", default="gepa-bird")
+    p.add_argument("--tenant", default="gepa-opt")
     p.add_argument("--mlflow", action="store_true", help="Log the run to MLflow.")
-    p.add_argument("--output", default="gepa_bird_result.json")
+    p.add_argument("--output", default="gepa_result.json")
     p.add_argument("--log-level", default="INFO")
     return p
 
