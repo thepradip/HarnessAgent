@@ -27,6 +27,7 @@ from harness.core.errors import (
     SafetyViolation,
     ToolError,
 )
+from harness.core.prompt_overrides import gepa_override
 from harness.observability.failures import StepFailure
 from harness.observability.trace_schema import SpanKind, SpanStatus
 
@@ -224,7 +225,9 @@ class BaseAgent:
 
                     # 3c. Build messages
                     messages = self.build_messages(ctx, history, retrieval_context, skill_context)
-                    system_prompt = self.build_system_prompt(ctx)
+                    system_prompt = gepa_override(
+                        ctx, "system_prompt", self.build_system_prompt(ctx)
+                    )
 
                     # 3d. LLM call with OTel span
                     async with self._llm_span(ctx) as llm_span_id:
