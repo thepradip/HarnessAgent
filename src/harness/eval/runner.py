@@ -631,7 +631,7 @@ class EvalRunner:
     ) -> float:
         """Compute a score for the given case and output."""
         if scorer is not None:
-            result = scorer(output, case.expected_output)
+            result = _invoke_scorer(scorer, output, case.expected_output, case)
             if asyncio.iscoroutine(result):
                 result = await result
             if isinstance(result, ScoreResult):
@@ -668,6 +668,28 @@ class EvalRunner:
             prompt_version=config.get("prompt_version", label),
         )
         return report
+
+
+def _invoke_scorer(scorer: Callable[..., Any], output: str, expected: Any, case: EvalCase) -> Any:
+    """Call ``scorer`` with the case when it accepts it, else the (output, expected) form.
+
+    Case-aware scorers (e.g. code-execution pass@1, which needs the test harness in
+    ``case.metadata``) declare a 3rd positional ``case`` param or a ``case`` keyword.
+    Plain ``scorer(output, expected)`` callables are unaffected.
+    """
+    try:
+        params = inspect.signature(scorer).parameters
+        positional = sum(
+            1
+            for p in params.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        )
+        has_varargs = any(p.kind == p.VAR_POSITIONAL for p in params.values())
+        if "case" in params or positional >= 3 or has_varargs:
+            return scorer(output, expected, case)
+    except (TypeError, ValueError):
+        pass
+    return scorer(output, expected)
 
 
 def _runner_kwargs(

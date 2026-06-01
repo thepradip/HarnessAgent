@@ -473,3 +473,57 @@ async def score_llm_judge(
             method="llm_judge",
             details=f"LLM judge error: {exc}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Code-execution scoring (HumanEval-style pass@1)
+# ---------------------------------------------------------------------------
+
+_CODE_FENCE_RE = re.compile(r"^```[a-zA-Z0-9_]*\n?|\n?```$", re.MULTILINE)
+
+
+def _strip_code_fences(text: str) -> str:
+    """Remove Markdown code fences an agent may wrap code in."""
+    return _CODE_FENCE_RE.sub("", text or "").strip()
+
+
+async def score_code_execution(output: str, case: Any, sandbox: Any) -> ScoreResult:
+    """Score a code-generation case by executing it against its unit tests.
+
+    Assembles a runnable program from the candidate output plus the case's test
+    harness — HumanEval style: ``case.metadata["test"]`` defines ``check(...)`` and
+    ``case.metadata["entry_point"]`` names the function under test — then runs it in
+    ``sandbox`` (an EvalSandbox, e.g. CodeSandbox). Pass (score 1.0) iff the program
+    exits cleanly; any assertion error / exception → 0.0.
+
+    If the model returned only the function body/completion (no ``def
+    {entry_point}``), the prompt (signature + docstring) is prepended so the
+    candidate becomes a complete module.
+    """
+    meta = getattr(case, "metadata", {}) or {}
+    test = meta.get("test", "")
+    entry_point = meta.get("entry_point", "")
+    prompt = meta.get("prompt", "") or getattr(case, "task", "")
+
+    if not test:
+        return ScoreResult(score=0.0, method="code_execution", details="no test harness in case")
+
+    candidate = _strip_code_fences(output)
+    if entry_point and f"def {entry_point}" not in candidate:
+        program = f"{prompt}\n{candidate}"
+    else:
+        program = candidate
+
+    program = f"{program}\n\n{test}"
+    if entry_point:
+        program += f"\n\ncheck({entry_point})\n"
+
+    try:
+        result = await sandbox.execute(program, language="python")
+    except Exception as exc:  # sandbox unavailable / crashed
+        return ScoreResult(score=0.0, method="code_execution", details=f"sandbox error: {exc}")
+
+    if getattr(result, "success", False):
+        return ScoreResult(score=1.0, method="code_execution", details="passed unit tests")
+    detail = getattr(result, "error", "") or getattr(result, "raw_text", "")
+    return ScoreResult(score=0.0, method="code_execution", details=f"failed: {str(detail)[:200]}")

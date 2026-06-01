@@ -28,6 +28,7 @@ _spec.loader.exec_module(cli)
 def test_pick_scorer_variants():
     assert callable(cli.pick_scorer("exact"))
     assert callable(cli.pick_scorer("sql_equiv"))
+    assert callable(cli.pick_scorer("execution"))
     with pytest.raises(ValueError):
         cli.pick_scorer("nope")
 
@@ -41,6 +42,8 @@ def test_benchmarks_registry_defaults():
     # gsm8k is the default benchmark and uses a true (exact-answer) scorer.
     assert cli.build_parser().parse_args(["--data-dir", "/x"]).benchmark == "gsm8k"
     assert cli.BENCHMARKS["gsm8k"]["scorer"] == "exact"
+    # HumanEval defaults to real pass@1 execution scoring.
+    assert cli.BENCHMARKS["humaneval"]["scorer"] == "execution"
     assert cli.BENCHMARKS["bird"]["agent_type"] == "sql"
     assert set(cli.BENCHMARKS) == {"gsm8k", "humaneval", "spider", "bird"}
 
