@@ -233,7 +233,12 @@ def load_humaneval(
                 gold_actions=[canonical] if canonical else [],
                 sandbox_type="code",
                 hardness="medium",
-                metadata={"entry_point": row.get("entry_point", ""), "source": "humaneval"},
+                metadata={
+                    "entry_point": row.get("entry_point", ""),
+                    "prompt": prompt,
+                    "test": row.get("test", ""),  # unit-test harness for pass@1
+                    "source": "humaneval",
+                },
                 tags=["humaneval"],
             ))
     if n_samples is not None:

@@ -52,17 +52,21 @@ _DEFAULT_CONTEXT_SUMMARY = (
 # Per-benchmark defaults: agent_type, default scorer, and the default split.
 BENCHMARKS: dict[str, dict[str, Any]] = {
     "gsm8k": {"agent_type": "code", "scorer": "exact", "split": "test"},
-    "humaneval": {"agent_type": "code", "scorer": "exact", "split": None},
+    "humaneval": {"agent_type": "code", "scorer": "execution", "split": None},
     "spider": {"agent_type": "sql", "scorer": "sql_equiv", "split": "dev"},
     "bird": {"agent_type": "sql", "scorer": "sql_equiv", "split": "dev"},
 }
 
+SCORERS = ("exact", "sql_equiv", "execution")
 
-def pick_scorer(name: str) -> Callable[[str, str], float]:
+
+def pick_scorer(name: str) -> Callable[..., Any]:
     """Return an EvalRunner-compatible scorer callable for ``name``.
 
     - ``exact``:     substring/exact-match on the gold text.
     - ``sql_equiv``: SQL AST equivalence (ignores formatting/aliasing).
+    - ``execution``: HumanEval-style pass@1 — run candidate code against the case's
+                     unit tests in a sandbox (case-aware, async). Real correctness.
     """
     from harness.eval.scorers import score_exact_match, score_sql_equivalence
 
@@ -70,14 +74,25 @@ def pick_scorer(name: str) -> Callable[[str, str], float]:
         return lambda output, expected: score_sql_equivalence(output or "", expected or "")
     if name == "exact":
         return lambda output, expected: score_exact_match(output or "", expected or "")
-    raise ValueError(f"unknown scorer {name!r} (choose: exact, sql_equiv)")
+    if name == "execution":
+        from harness.eval.sandbox import CodeSandbox
+        from harness.eval.scorers import score_code_execution
+
+        sandbox = CodeSandbox()
+
+        async def _execution_scorer(output: str, expected: Any, case: Any) -> float:
+            result = await score_code_execution(output, case, sandbox)
+            return float(result.score)
+
+        return _execution_scorer
+    raise ValueError(f"unknown scorer {name!r} (choose: {', '.join(SCORERS)})")
 
 
 def load_benchmark(name: str, data_dir: str, split: str | None, n_samples: int | None) -> Any:
     """Load ``name`` via the matching benchmark loader, normalizing signatures."""
     from harness.eval import benchmark_loaders as bl
 
-    eff_split = split or BENCHMARKS[name]["split"]
+    eff_split: Any = split or BENCHMARKS[name]["split"]
     if name == "spider":
         return bl.load_spider(data_dir, split=eff_split or "dev", n_samples=n_samples)
     if name == "bird":
@@ -261,8 +276,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma list: system_prompt,planner_prompt,context_summary",
     )
     p.add_argument(
-        "--scorer", default=None, choices=["exact", "sql_equiv"],
-        help="Override the benchmark's default scorer.",
+        "--scorer", default=None, choices=list(SCORERS),
+        help="Override the benchmark's default scorer (execution = HumanEval pass@1).",
     )
     p.add_argument("--budget", type=int, default=60, help="Max candidate evaluations.")
     p.add_argument("--concurrency", type=int, default=3)
