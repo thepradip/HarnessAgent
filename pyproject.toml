@@ -11,7 +11,7 @@ license = "MIT"
 readme = "README.md"
 homepage = "https://github.com/thepradip/HarnessAgent"
 repository = "https://github.com/thepradip/HarnessAgent"
-documentation = "https://thepradip.github.io/HarnessAgent-docs/"
+documentation = "https://thepradip.github.io/HarnessAgent/"
 keywords = ["llm", "agent", "multi-agent", "haas", "harness", "autogen", "crewai", "langgraph", "openai", "anthropic", "tracing", "observability"]
 packages = [{include = "harness", from = "src"}]
 classifiers = [

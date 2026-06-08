@@ -7,7 +7,7 @@ Production-grade agent harness for building, running, observing, and self-improv
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-green?logo=fastapi)](https://fastapi.tiangolo.com)
 [![Tests](https://img.shields.io/badge/tests-1087%20passing-brightgreen)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Models](https://img.shields.io/badge/LLMs-Claude%20%7C%20GPT--5%20%7C%20vLLM%20%7C%20llama.cpp-purple)](https://thepradip.github.io/HarnessAgent-docs/)
+[![Models](https://img.shields.io/badge/LLMs-Claude%20%7C%20GPT--5%20%7C%20vLLM%20%7C%20llama.cpp-purple)](https://thepradip.github.io/HarnessAgent/)
 
 ---
 
@@ -693,7 +693,7 @@ HarnessAgent/
 | Dashboard | URL | Credentials |
 |---|---|---|
 | Operator console + Trace waterfall | http://localhost:8000 | API key or dev mode |
-| Technical docs | https://thepradip.github.io/HarnessAgent-docs/ | — |
+| Technical docs | https://thepradip.github.io/HarnessAgent/ | — |
 | MLflow Traces | http://localhost:5000 | — |
 | Grafana | http://localhost:3000 | admin / harness_admin |
 | Prometheus | http://localhost:9090 | — |
@@ -841,7 +841,7 @@ MIT. See [LICENSE](LICENSE).
 ---
 
 <p align="center">
-  <a href="https://thepradip.github.io/HarnessAgent-docs/">Technical Docs</a> &nbsp;|&nbsp;
+  <a href="https://thepradip.github.io/HarnessAgent/">Technical Docs</a> &nbsp;|&nbsp;
   <a href="http://localhost:8000">Dashboard</a> &nbsp;|&nbsp;
   <a href="https://github.com/thepradip/HarnessAgent/issues">Issues</a>
 </p>

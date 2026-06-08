@@ -67,8 +67,8 @@ models/*.safetensors
 /chrome/
 /output/
 
-# Docs, PDFs, and pitch decks — local only
-/docs/
+# PDFs and pitch decks — local only
+# NOTE: /docs/ is the published GitHub Pages site (Settings → Pages → main /docs); do NOT ignore it
 *.pdf
 *.pptx
 *.ppt
