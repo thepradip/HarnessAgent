@@ -213,7 +213,7 @@ async def test_resume_restores_history_into_loop(agent_context):
     mock_checkpoint = AsyncMock()
     captured_messages: list = []
 
-    async def capturing_complete(messages, system, tools=None, max_tokens=256):
+    async def capturing_complete(messages, system, tools=None, max_tokens=256, **kwargs):
         captured_messages.extend(messages)
         return _make_llm_response("done")
 

@@ -34,6 +34,30 @@ class Settings(BaseSettings):
     sglang_model: str = "meta-llama/Meta-Llama-3-8B-Instruct"
     llamacpp_base_url: str = ""
 
+    # OpenAI-compatible vendors (enabled by setting the key). Optional per-vendor
+    # <VENDOR>_BASE_URL / <VENDOR>_MODELS overrides are read from the environment.
+    deepseek_api_key: str = ""
+    together_api_key: str = ""
+    fireworks_api_key: str = ""
+    groq_api_key: str = ""
+    openrouter_api_key: str = ""
+    mistral_api_key: str = ""
+    xai_api_key: str = ""
+
+    # AWS Bedrock (set bedrock_enabled=true + AWS creds in the standard chain).
+    # Model lists are "id:tier" comma-separated, e.g.
+    #   BEDROCK_CLAUDE_MODELS="anthropic.claude-opus-4-7:premium,anthropic.claude-haiku-4-5:cheap"
+    #   BEDROCK_CONVERSE_MODELS="meta.llama3-3-70b-instruct-v1:0:standard"
+    bedrock_enabled: bool = False
+    bedrock_region: str = "us-east-1"
+    bedrock_claude_models: str = ""
+    bedrock_converse_models: str = ""
+
+    # Cost-aware routing: complexity scorer on by default; optional per-tenant
+    # tier→model maps as a JSON string (ROUTING_TENANT_TIERS).
+    routing_complexity_enabled: bool = True
+    routing_tenant_tiers: str = ""
+
     # -------------------------------------------------------------------------
     # Vector Store
     # -------------------------------------------------------------------------

@@ -40,15 +40,34 @@ class ProviderEntry:
     provider: LLMProvider
     context_window: int = 200_000
     enabled: bool = True
+    tier: str = "standard"          # cheap | standard | premium — cost/capability band
+    cost: float = 0.0               # informational relative cost weight (USD/M output)
 
 
 @dataclass
 class LLMRouterConfig:
-    """Configuration for LLMRouter."""
+    """Configuration for LLMRouter.
+
+    Cost-aware routing (all optional — when unset the router behaves exactly as
+    a priority-ordered router):
+
+    - ``scorer``: a :class:`~harness.llm.complexity.ComplexityScorer`. When set
+      and no explicit ``tier`` is passed to ``complete()``, the router scores the
+      request to pick a tier.
+    - ``tenant_tiers``: per-tenant ``{tier -> [provider_key, ...]}`` maps, where a
+      provider key is ``"provider_name:model"`` (or a bare model id). Lets each
+      tenant supply its own model per tier across vendors.
+    - ``default_tiers``: fallback ``{tier -> [provider_key, ...]}`` used when a
+      tenant has no entry. When neither map is set, tiering falls back to each
+      provider's ``ProviderEntry.tier`` tag.
+    """
     providers: list[ProviderEntry] = field(default_factory=list)
     circuit_failure_threshold: int = 5
     circuit_recovery_timeout: float = 60.0
     circuit_success_threshold: int = 2
+    scorer: Any | None = None       # ComplexityScorer | None
+    tenant_tiers: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+    default_tiers: dict[str, list[str]] = field(default_factory=dict)
 
 
 class LLMRouter:
@@ -77,10 +96,23 @@ class LLMRouter:
         provider: LLMProvider,
         priority: int = 0,
         context_window: int = 200_000,
+        tier: str = "standard",
+        cost: float = 0.0,
     ) -> None:
-        """Add a provider to the router."""
+        """Add a provider to the router.
+
+        ``tier`` tags the provider's cost/capability band (``cheap`` / ``standard``
+        / ``premium``); it is used by complexity-based routing when no explicit
+        per-tenant tier map is configured. ``cost`` is an informational weight.
+        """
         self._config.providers.append(
-            ProviderEntry(priority=priority, provider=provider, context_window=context_window)
+            ProviderEntry(
+                priority=priority,
+                provider=provider,
+                context_window=context_window,
+                tier=tier,
+                cost=cost,
+            )
         )
         self._config.providers.sort(key=lambda e: e.priority)
 
@@ -98,6 +130,62 @@ class LLMRouter:
 
     def _sorted_providers(self) -> list[ProviderEntry]:
         return [e for e in sorted(self._config.providers, key=lambda e: e.priority) if e.enabled]
+
+    def _resolve_tier(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tier: str | None,
+        system: str | None,
+        tools: list[dict[str, Any]] | None,
+        required_context: int,
+        max_tokens: int,
+    ) -> str | None:
+        """Pick the target tier: explicit arg wins, else the scorer, else None."""
+        if tier is not None:
+            return tier
+        scorer = self._config.scorer
+        if scorer is None:
+            return None
+        try:
+            return scorer.score(
+                messages,
+                system=system,
+                tools=tools,
+                required_context=required_context,
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:  # never let routing-policy errors break a request
+            logger.debug("Complexity scorer failed (ignoring tier): %s", exc)
+            return None
+
+    def _ordered_entries(
+        self, tenant_id: str | None, tier: str | None
+    ) -> list[ProviderEntry]:
+        """Enabled providers, target-tier first then the rest as fallback.
+
+        Tier membership comes from the tenant's tier map (or the default map) when
+        configured, falling back to each entry's own ``tier`` tag. Health, context
+        window, and circuit-breaker handling are unchanged — this only reorders.
+        """
+        entries = self._sorted_providers()
+        if tier is None:
+            return entries
+
+        tier_map = self._config.tenant_tiers.get(tenant_id or "") or self._config.default_tiers
+        preferred_keys = set(tier_map.get(tier, [])) if tier_map else None
+
+        def in_tier(e: ProviderEntry) -> bool:
+            if preferred_keys is not None:
+                key = f"{e.provider.provider_name}:{e.provider.model}"
+                return key in preferred_keys or e.provider.model in preferred_keys
+            return e.tier == tier
+
+        preferred = [e for e in entries if in_tier(e)]
+        if not preferred:
+            return entries  # nothing matched the tier — fall back to full order
+        rest = [e for e in entries if not in_tier(e)]
+        return preferred + rest
 
     async def _is_healthy(self, provider: LLMProvider) -> bool:
         """Return cached health status; re-check after _health_ttl seconds."""
@@ -149,9 +237,20 @@ class LLMRouter:
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         skip_cache: bool = False,
+        tenant_id: str | None = None,
+        tier: str | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """Route a completion request, falling back on retryable errors.
+
+        Cost-aware routing
+        -------------------
+        When ``tier`` is given it selects the target cost/capability band
+        directly. Otherwise, if a complexity ``scorer`` is configured, the
+        request is scored to pick a tier. ``tenant_id`` selects that tenant's
+        tier→model map (so different tenants can be served by different models).
+        Providers in the target tier are tried first; the router falls back
+        through the remaining providers by priority on any retryable error.
 
         Cache behaviour
         ---------------
@@ -188,7 +287,18 @@ class LLMRouter:
 
         last_exc: Exception | None = None
 
-        for entry in self._sorted_providers():
+        target_tier = self._resolve_tier(
+            messages,
+            tier=tier,
+            system=system,
+            tools=tools,
+            required_context=required_context,
+            max_tokens=max_tokens,
+        )
+        if target_tier is not None:
+            logger.debug("Routing tier=%s tenant=%s", target_tier, tenant_id)
+
+        for entry in self._ordered_entries(tenant_id, target_tier):
             provider = entry.provider
 
             # Skip providers whose context window is too small
@@ -249,10 +359,24 @@ class LLMRouter:
     async def stream(
         self,
         messages: list[dict[str, Any]],
+        *,
+        tenant_id: str | None = None,
+        tier: str | None = None,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
-        """Stream tokens from the first available provider."""
-        for entry in self._sorted_providers():
+        """Stream tokens from the first available provider (tier-aware)."""
+        target_tier = self._resolve_tier(
+            messages, tier=tier, system=system, tools=tools,
+            required_context=0, max_tokens=kwargs.get("max_tokens", 0),
+        )
+        stream_kwargs = dict(kwargs)
+        if system is not None:
+            stream_kwargs["system"] = system
+        if tools is not None:
+            stream_kwargs["tools"] = tools
+        for entry in self._ordered_entries(tenant_id, target_tier):
             provider = entry.provider
             if not await self._is_healthy(provider):
                 continue
@@ -260,7 +384,7 @@ class LLMRouter:
             breaker = self._get_breaker(provider)
             try:
                 async with breaker.call():
-                    async for token in provider.stream(messages, **kwargs):
+                    async for token in provider.stream(messages, **stream_kwargs):
                         yield token
                     return
             except (CircuitOpenError, LLMError):

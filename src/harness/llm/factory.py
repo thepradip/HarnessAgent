@@ -40,7 +40,7 @@ _OPENAI_CONTEXT: dict[str, int] = {
 }
 
 
-def build_router(config: "Settings") -> LLMRouter:
+def build_router(config: Settings) -> LLMRouter:
     """Create an LLMRouter from environment configuration.
 
     Priority order (lower number = tried first):
@@ -78,6 +78,7 @@ def build_router(config: "Settings") -> LLMRouter:
             ),
             priority=0,
             context_window=_OPENAI_CONTEXT.get(deployment, 128_000),
+            tier="premium",
         )
         logger.info("Registered Azure OpenAI provider: deployment=%s", deployment)
     else:
@@ -117,12 +118,15 @@ def build_router(config: "Settings") -> LLMRouter:
             ]
 
         for model_id, priority, ctx in openai_models:
+            tier = "cheap" if "mini" in model_id or model_id.startswith("o4-mini") else "standard"
             router.register(
                 OpenAIProvider(api_key=config.openai_api_key, model=model_id),
                 priority=priority,
                 context_window=ctx,
+                tier=tier,
             )
-            logger.info("Registered OpenAI provider: %s (priority=%d)", model_id, priority)
+            logger.info("Registered OpenAI provider: %s (priority=%d, tier=%s)",
+                        model_id, priority, tier)
     else:
         logger.info("OPENAI_API_KEY not set — OpenAI provider disabled")
 
@@ -144,6 +148,7 @@ def build_router(config: "Settings") -> LLMRouter:
             ),
             priority=100,
             context_window=32_768,
+            tier="cheap",
         )
         logger.info("Registered vLLM provider: %s @ %s", vllm_model, vllm_url)
 
@@ -165,6 +170,7 @@ def build_router(config: "Settings") -> LLMRouter:
             ),
             priority=110,
             context_window=8_192,
+            tier="cheap",
         )
         logger.info("Registered SGLang provider: %s @ %s", sglang_model, sglang_url)
 
@@ -185,6 +191,7 @@ def build_router(config: "Settings") -> LLMRouter:
             ),
             priority=120,
             context_window=4_096,
+            tier="cheap",
         )
         logger.info("Registered llama.cpp provider @ %s", llamacpp_url)
 
@@ -205,6 +212,7 @@ def build_router(config: "Settings") -> LLMRouter:
             ),
             priority=105,
             context_window=hermes_ctx,
+            tier="cheap",
         )
         logger.info(
             "Registered HermesXML provider: %s @ %s (ctx=%d)",
@@ -213,13 +221,114 @@ def build_router(config: "Settings") -> LLMRouter:
             hermes_ctx,
         )
 
+    # ------------------------------------------------------------------
+    # OpenAI-compatible vendors (DeepSeek, Together, Fireworks, Groq,
+    # OpenRouter, Mistral, xAI) — registered from the declarative catalog.
+    # Each is the existing OpenAIProvider pointed at the vendor's base_url.
+    # ------------------------------------------------------------------
+    import os as _os
+
+    from harness.llm.providers_catalog import resolve_compat_vendors
+
+    def _getenv(key: str) -> str | None:
+        # Prefer a Settings field (covers .env), fall back to the real environment.
+        val = getattr(config, key.lower(), None)
+        return val if val else _os.environ.get(key)
+
+    for reg in resolve_compat_vendors(_getenv):
+        provider = OpenAIProvider(api_key=reg.api_key, model=reg.model, base_url=reg.base_url)
+        provider.provider_name = reg.vendor  # distinct circuit breaker + tier key
+        router.register(
+            provider,
+            priority=reg.priority,
+            context_window=_OPENAI_CONTEXT.get(reg.model, 128_000),
+            tier=reg.tier,
+        )
+        logger.info("Registered %s provider: %s (tier=%s)", reg.vendor, reg.model, reg.tier)
+
+    # ------------------------------------------------------------------
+    # AWS Bedrock — Claude (AnthropicBedrock) + general models (Converse)
+    # ------------------------------------------------------------------
+    if getattr(config, "bedrock_enabled", False):
+        from harness.llm.bedrock import BedrockClaudeProvider, BedrockConverseProvider
+
+        region = getattr(config, "bedrock_region", "") or None
+        # Claude on Bedrock — anthropic.-prefixed IDs, e.g. "anthropic.claude-opus-4-7:premium"
+        for spec in _parse_bedrock_models(getattr(config, "bedrock_claude_models", "")):
+            model_id, tier = spec
+            router.register(
+                BedrockClaudeProvider(model=model_id, aws_region=region),
+                priority=40, context_window=200_000, tier=tier,
+            )
+            logger.info("Registered Bedrock Claude provider: %s (tier=%s)", model_id, tier)
+        # General Bedrock models via Converse — Llama / Mistral / DeepSeek / Titan
+        for spec in _parse_bedrock_models(getattr(config, "bedrock_converse_models", "")):
+            model_id, tier = spec
+            router.register(
+                BedrockConverseProvider(model=model_id, aws_region=region),
+                priority=45, context_window=128_000, tier=tier,
+            )
+            logger.info("Registered Bedrock Converse provider: %s (tier=%s)", model_id, tier)
+
+    # ------------------------------------------------------------------
+    # Cost-aware routing policy: complexity scorer + per-tenant tier maps
+    # ------------------------------------------------------------------
+    if getattr(config, "routing_complexity_enabled", True):
+        from harness.llm.complexity import HeuristicComplexityScorer
+
+        router._config.scorer = HeuristicComplexityScorer()
+        logger.info("Cost-aware routing enabled (heuristic complexity scorer)")
+
+    tenant_tiers = _parse_tenant_tiers(getattr(config, "routing_tenant_tiers", ""))
+    if tenant_tiers:
+        router._config.tenant_tiers = tenant_tiers
+        logger.info("Loaded per-tenant tier maps for %d tenant(s)", len(tenant_tiers))
+
     if not router._config.providers:
         raise RuntimeError(
             "No LLM providers configured. Set one of:\n"
             "  AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT  (for Azure GPT-5.2)\n"
             "  ANTHROPIC_API_KEY                             (for Claude)\n"
             "  OPENAI_API_KEY                                (for OpenAI)\n"
+            "  DEEPSEEK_API_KEY / TOGETHER_API_KEY / ...     (OpenAI-compatible vendors)\n"
+            "  BEDROCK_ENABLED=true + AWS creds              (for AWS Bedrock)\n"
             "in your .env file."
         )
 
     return router
+
+
+def _parse_bedrock_models(raw: str) -> list[tuple[str, str]]:
+    """Parse a 'model:tier,model2:tier2' string into (model, tier) pairs.
+
+    Tier defaults to 'premium' for Claude-class models and 'standard' otherwise
+    when no ':tier' suffix is given.
+    """
+    out: list[tuple[str, str]] = []
+    for item in (raw or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if ":" in item and not item.endswith(":"):
+            # Avoid splitting on the ':0' version suffix some Bedrock IDs carry.
+            head, _, maybe_tier = item.rpartition(":")
+            if maybe_tier in ("cheap", "standard", "premium"):
+                out.append((head, maybe_tier))
+                continue
+        out.append((item, "standard"))
+    return out
+
+
+def _parse_tenant_tiers(raw: str) -> dict:
+    """Parse ROUTING_TENANT_TIERS JSON into a {tenant: {tier: [keys]}} map."""
+    if not raw or not raw.strip():
+        return {}
+    import json
+
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except (ValueError, TypeError) as exc:
+        logger.warning("Could not parse ROUTING_TENANT_TIERS as JSON: %s", exc)
+    return {}

@@ -1023,6 +1023,7 @@ class BaseAgent:
             system=system,
             tools=tools if tools else None,
             max_tokens=max_tokens,
+            tenant_id=ctx.tenant_id,
         )
 
     async def _call_llm_streaming(
@@ -1061,6 +1062,7 @@ class BaseAgent:
                 messages=messages,
                 system=system,
                 max_tokens=max_tokens,
+                tenant_id=ctx.tenant_id,
             )
 
         full_text = "".join(chunks)
@@ -1293,6 +1295,8 @@ class BaseAgent:
                     ],
                     system="You are a helpful assistant that summarizes conversations concisely.",
                     max_tokens=512,
+                    tenant_id=ctx.tenant_id,
+                    tier="cheap",  # summarization is simple — never burn the premium model
                 )
                 summary_text = summary_response.content.strip()
                 if summary_text:
