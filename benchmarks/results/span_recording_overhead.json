@@ -4,8 +4,8 @@
     "iterations": 2000,
     "backend": "fakeredis",
     "baseline_p50_us": 0.1,
-    "start_end_span_net_p50_us": 871.7,
-    "context_manager_net_p50_us": 876.9,
+    "start_end_span_net_p50_us": 899.1,
+    "context_manager_net_p50_us": 921.5,
     "set_llm_usage_net_p50_us": 0.0
   },
   "measurements": [
@@ -15,34 +15,34 @@
       "p95_us": 0.1,
       "p99_us": 0.1,
       "avg_us": 0.1,
-      "stdev_us": 0.0,
+      "stdev_us": 0.2,
       "n": 2000
     },
     {
       "label": "start_span + end_span",
-      "p50_us": 871.8,
-      "p95_us": 953.7,
-      "p99_us": 1100.6,
-      "avg_us": 881.8,
-      "stdev_us": 45.1,
+      "p50_us": 899.2,
+      "p95_us": 1113.2,
+      "p99_us": 2982.5,
+      "avg_us": 976.4,
+      "stdev_us": 494.7,
       "n": 2000
     },
     {
       "label": "async with recorder.span(...)",
-      "p50_us": 877.0,
-      "p95_us": 945.1,
-      "p99_us": 1071.1,
-      "avg_us": 881.3,
-      "stdev_us": 40.8,
+      "p50_us": 921.6,
+      "p95_us": 1156.0,
+      "p99_us": 1406.8,
+      "avg_us": 954.0,
+      "stdev_us": 127.5,
       "n": 2000
     },
     {
       "label": "set_llm_usage (sync annotation)",
       "p50_us": 0.1,
-      "p95_us": 0.3,
+      "p95_us": 0.2,
       "p99_us": 1.0,
-      "avg_us": 0.2,
-      "stdev_us": 0.5,
+      "avg_us": 0.4,
+      "stdev_us": 8.4,
       "n": 2000
     }
   ]

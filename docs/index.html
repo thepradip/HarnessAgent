@@ -1283,8 +1283,8 @@ ctx.metadata[<span class="st">"policy"</span>] = <span class="cl">HarnessPolicy<
   <div class="grid-3" style="margin-top:16px">
     <div class="stat-card">
       <div class="num">71.4%</div>
-      <div class="label">BIRD pass rate</div>
-      <div class="sub">exec accuracy on BIRD dev set</div>
+      <div class="label">BIRD exec accuracy</div>
+      <div class="sub">live run on BIRD dev set (frontier LLM); reproduce with your own keys</div>
     </div>
     <div class="stat-card">
       <div class="num">2</div>
@@ -1444,7 +1444,7 @@ report = <span class="kw">await</span> <span class="fn">run_benchmark</span>(
 <!-- ══════════════════════ RESULTS ══════════════════════ -->
 <section class="section" id="results">
   <h2>Benchmark Results</h2>
-  <p>All numbers below are from reproducible runs using the <code>bench_agent.py</code> framework. Source data and raw logs are in <code>benchmarks/</code>.</p>
+  <p><strong>System benchmarks</strong> (GraphRAG, semantic cache, circuit breaker, span overhead, Hermes loop) are deterministic and reproducible offline with <code>PYTHONPATH=src python benchmarks/run_all.py</code> — no API keys or datasets, Redis is faked in-process; they regenerate <code>benchmarks/results/REPORT.md</code>. <strong>Task / accuracy benchmarks</strong> (BIRD, GSM8K, HumanEval) require a live frontier LLM and the dataset download, so the numbers depend on your model + dataset version — reproduce them with <code>bench_agent.py</code> using your own keys. The Hermes figure is a <em>synthetic loop-mechanics demo</em> (mock LLM modeling a clearly-good fix), not a measured LLM gain.</p>
 
   <h3>Summary</h3>
   <div class="grid-3" style="margin-top:16px">
@@ -1460,27 +1460,28 @@ report = <span class="kw">await</span> <span class="fn">run_benchmark</span>(
     </div>
     <div class="stat-card">
       <div class="num" style="color:var(--accent-2)">71.4%</div>
-      <div class="label">BIRD pass rate</div>
-      <div class="sub">NexusSql + GPT-5.5 · exec accuracy 71.4%</div>
+      <div class="label">BIRD exec accuracy <span style="color:var(--warn)">†</span></div>
+      <div class="sub">NexusSql + frontier LLM · requires live run on BIRD dev set</div>
     </div>
   </div>
   <div class="grid-3">
     <div class="stat-card">
       <div class="num" style="color:var(--accent-5)">0.01ms</div>
       <div class="label">Circuit breaker time-to-open</div>
-      <div class="sub">0 false-positive trips · 3 scenarios</div>
+      <div class="sub">opens under failure, recovers · 0 false trips · 3 scenarios</div>
     </div>
     <div class="stat-card">
-      <div class="num" style="color:var(--accent-5)">872µs</div>
+      <div class="num" style="color:var(--accent-5)">~0.9ms</div>
       <div class="label">Span overhead p50</div>
-      <div class="sub">fakeredis · production adds ~200µs</div>
+      <div class="sub">fakeredis · production Redis adds network latency</div>
     </div>
     <div class="stat-card">
-      <div class="num" style="color:var(--accent-4)">+70pp</div>
-      <div class="label">Hermes self-improvement</div>
-      <div class="sub">15% → 85% pass@1 · converges cycle 1</div>
+      <div class="num" style="color:var(--accent-4)">demo</div>
+      <div class="label">Hermes loop <span style="color:var(--warn)">‡</span></div>
+      <div class="sub">synthetic detect→patch→converge demo (mock LLM), not a measured gain</div>
     </div>
   </div>
+  <p style="font-size:13px;color:var(--muted);margin-top:10px"><span style="color:var(--warn)">†</span> Task/accuracy benchmark — reproduce with your own keys + dataset via <code>bench_agent.py --agent sql --dataset bird</code>; the number depends on the model and dataset version. <span style="color:var(--warn)">‡</span> The Hermes self-improvement benchmark uses a mock LLM and a modeled golden fix to exercise the loop mechanics end-to-end; real self-improvement requires <code>bench_hermes_real.py</code> with a live LLM.</p>
 
   <h3>Full results table</h3>
   <table>
@@ -1514,26 +1515,26 @@ report = <span class="kw">await</span> <span class="fn">run_benchmark</span>(
       <tr>
         <td><strong>Span overhead</strong></td>
         <td>p50 latency</td>
-        <td><span class="result-num">872 µs</span></td>
-        <td>fakeredis backend</td>
+        <td><span class="result-num">~0.9 ms</span></td>
+        <td>fakeredis backend · reproducible</td>
       </tr>
       <tr>
-        <td><strong>Hermes self-improvement</strong></td>
-        <td>pass@1</td>
-        <td><span class="result-good">15% → 85% (+70 pp)</span></td>
-        <td>Converges in cycle 1</td>
+        <td><strong>Hermes loop</strong> <span style="color:var(--warn)">‡</span></td>
+        <td>pass@1 (synthetic)</td>
+        <td><span class="result-num">detect→patch→converge</span></td>
+        <td>mock LLM + modeled golden fix · loop-mechanics demo, not a measured gain</td>
       </tr>
       <tr>
-        <td><strong>BIRD self-test</strong></td>
-        <td>pass rate / exec accuracy</td>
-        <td><span class="result-good">71.4% / 71.4%</span></td>
-        <td>NexusSqlAgent + GPT-5.5</td>
+        <td><strong>BIRD exec accuracy</strong> <span style="color:var(--warn)">†</span></td>
+        <td>exec accuracy</td>
+        <td><span class="result-num">71.4%</span></td>
+        <td>NexusSqlAgent + frontier LLM · requires live run on BIRD dev set</td>
       </tr>
       <tr>
-        <td><strong>GSM8K reasoning</strong></td>
+        <td><strong>GSM8K reasoning</strong> <span style="color:var(--warn)">†</span></td>
         <td>pass rate / avg reward</td>
-        <td><span class="result-good">85% · 0.892</span></td>
-        <td>GPT-5.5 · n=20</td>
+        <td><span class="result-num">85% · 0.892</span></td>
+        <td>frontier LLM · n=20 · requires live run</td>
       </tr>
     </tbody>
   </table>

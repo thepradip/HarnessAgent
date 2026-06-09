@@ -13,26 +13,26 @@
       "calls_allowed": 27,
       "calls_rejected": 2,
       "time_to_open_ms": 0.01,
-      "time_in_open_ms": 61.06,
+      "time_in_open_ms": 61.09,
       "calls_to_close": 2,
       "false_positive_trip": false,
       "transitions": [
         {
           "from": "CLOSED",
           "to": "OPEN",
-          "at_ms": 424371522.657916,
+          "at_ms": 542484911.595333,
           "call": 25
         },
         {
           "from": "OPEN",
           "to": "HALF_OPEN",
-          "at_ms": 424371583.730958,
+          "at_ms": 542484972.6991249,
           "call": 28
         },
         {
           "from": "HALF_OPEN",
           "to": "CLOSED",
-          "at_ms": 424371583.737791,
+          "at_ms": 542484972.7073749,
           "call": 29
         }
       ]
@@ -51,19 +51,19 @@
         {
           "from": "CLOSED",
           "to": "OPEN",
-          "at_ms": 424371583.786666,
+          "at_ms": 542484972.759875,
           "call": 5
         },
         {
           "from": "OPEN",
           "to": "HALF_OPEN",
-          "at_ms": 424371644.869958,
+          "at_ms": 542485033.873458,
           "call": 9
         },
         {
           "from": "HALF_OPEN",
           "to": "CLOSED",
-          "at_ms": 424371644.87833303,
+          "at_ms": 542485033.8905829,
           "call": 10
         }
       ]

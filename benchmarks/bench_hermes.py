@@ -183,15 +183,25 @@ class _MockAgentRunner:
     """Simulates agent runs. Pre-patch: 10% success rate. Post-patch: 80%."""
 
     def __init__(self) -> None:
+        import random
         self._patch_applied = False
         self.run_count = 0
+        # Seeded RNG: reproducible run-to-run AND statistically faithful to the
+        # target rates (the previous code used the global unseeded random, so
+        # pre/post pass@1 varied every run and the patch was sometimes rejected
+        # by chance under the 0.70 eval threshold).
+        self._rng = random.Random(20240601)
 
     async def run(self, agent_type: str, task: str, prompt: str, **kw) -> dict:
         self.run_count += 1
-        # Success rate depends on whether the patch has been applied
-        success_rate = 0.80 if (GOLDEN_PATCH_VALUE in prompt) else 0.10
-        import random
-        success = random.random() < success_rate
+        # Success rate depends on whether the golden patch is in the prompt:
+        # 10% baseline, 95% once Hermes has appended the golden fix. The patch
+        # must score clearly above threshold+margin (not just marginally) for
+        # the loop to AUTO-apply — marginal patches are correctly held for
+        # manual review since v0.4.0, so a "golden" fix is modeled as clearly
+        # good, which is what a real schema/column fix would be.
+        success_rate = 0.95 if (GOLDEN_PATCH_VALUE in prompt) else 0.10
+        success = self._rng.random() < success_rate
         return {
             "success": success,
             "steps": 3 if success else 1,

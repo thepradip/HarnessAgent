@@ -25,7 +25,7 @@
       "savings_pct": 83.4,
       "strategy": "vector_primary",
       "coverage_pct": 100.0,
-      "retrieval_ms": 0.71
+      "retrieval_ms": 0.76
     },
     {
       "query_id": "q02",
@@ -38,7 +38,7 @@
       "savings_pct": 83.8,
       "strategy": "vector_primary",
       "coverage_pct": 100.0,
-      "retrieval_ms": 32.29
+      "retrieval_ms": 35.29
     },
     {
       "query_id": "q03",
@@ -79,7 +79,7 @@
       "savings_pct": 83.8,
       "strategy": "vector_primary",
       "coverage_pct": 100.0,
-      "retrieval_ms": 0.31
+      "retrieval_ms": 0.29
     },
     {
       "query_id": "q06",
@@ -93,7 +93,7 @@
       "savings_pct": 82.5,
       "strategy": "vector_primary",
       "coverage_pct": 100.0,
-      "retrieval_ms": 0.32
+      "retrieval_ms": 0.31
     },
     {
       "query_id": "q07",
@@ -108,7 +108,7 @@
       "savings_pct": 84.4,
       "strategy": "vector_primary",
       "coverage_pct": 100.0,
-      "retrieval_ms": 0.58
+      "retrieval_ms": 0.57
     },
     {
       "query_id": "q08",
@@ -121,7 +121,7 @@
       "savings_pct": 91.4,
       "strategy": "vector_primary",
       "coverage_pct": 100.0,
-      "retrieval_ms": 0.49
+      "retrieval_ms": 0.48
     },
     {
       "query_id": "q09",
@@ -149,7 +149,7 @@
       "savings_pct": 81.6,
       "strategy": "vector_primary",
       "coverage_pct": 100.0,
-      "retrieval_ms": 0.62
+      "retrieval_ms": 0.64
     },
     {
       "query_id": "q11",
@@ -164,7 +164,7 @@
       "savings_pct": 83.8,
       "strategy": "vector_primary",
       "coverage_pct": 100.0,
-      "retrieval_ms": 0.32
+      "retrieval_ms": 0.31
     },
     {
       "query_id": "q12",
@@ -179,7 +179,7 @@
       "savings_pct": 75.1,
       "strategy": "graph_primary",
       "coverage_pct": 100.0,
-      "retrieval_ms": 0.69
+      "retrieval_ms": 0.7
     },
     {
       "query_id": "q13",
@@ -194,7 +194,7 @@
       "savings_pct": 83.4,
       "strategy": "vector_primary",
       "coverage_pct": 100.0,
-      "retrieval_ms": 0.32
+      "retrieval_ms": 0.3
     },
     {
       "query_id": "q14",
@@ -208,7 +208,7 @@
       "savings_pct": 82.3,
       "strategy": "vector_primary",
       "coverage_pct": 100.0,
-      "retrieval_ms": 0.31
+      "retrieval_ms": 0.3
     },
     {
       "query_id": "q15",
@@ -222,7 +222,7 @@
       "savings_pct": 75.9,
       "strategy": "vector_primary",
       "coverage_pct": 100.0,
-      "retrieval_ms": 0.38
+      "retrieval_ms": 0.35
     },
     {
       "query_id": "q16",
