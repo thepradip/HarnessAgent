@@ -1215,6 +1215,16 @@ class BaseAgent:
                     template=cfg.e2b_template or None,
                     workspace_path=ctx.workspace_path,
                 )
+            elif provider == "modal":
+                # Modal serverless sandbox — drop-in for SessionDockerSandbox.
+                from harness.filesystem.modal_sandbox import ModalSandbox
+                if not await ModalSandbox.is_available():
+                    logger.debug("Modal unavailable (missing SDK or MODAL_TOKEN_*); skipping session sandbox")
+                    return
+                session = ModalSandbox(
+                    app_name=cfg.modal_app_name,
+                    workspace_path=ctx.workspace_path,
+                )
             else:
                 from harness.filesystem.sandbox import SessionDockerSandbox, memory_for_workload
                 if not await SessionDockerSandbox.is_available():

@@ -123,9 +123,11 @@ class Settings(BaseSettings):
     # Where session code execution runs:
     #   "docker" — local Docker container (default; uses sandbox_runtime above)
     #   "e2b"    — E2B cloud micro-VM (set E2B_API_KEY; pip install agent-haas[e2b])
-    sandbox_provider: Literal["docker", "e2b"] = "docker"
+    #   "modal"  — Modal serverless container (set MODAL_TOKEN_ID/SECRET; agent-haas[modal])
+    sandbox_provider: Literal["docker", "e2b", "modal"] = "docker"
     e2b_api_key: str = ""
     e2b_template: str = ""   # optional E2B template id; empty = SDK default
+    modal_app_name: str = "agent-haas-sandbox"
 
     # -------------------------------------------------------------------------
     # Optional Agent Tool Backends

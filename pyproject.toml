@@ -125,6 +125,10 @@ boto3 = {version = ">=1.35.0", optional = true}
 # pip install agent-haas[e2b]
 e2b-code-interpreter = {version = ">=1.0.0", optional = true}
 
+# Modal serverless sandbox for code execution (SANDBOX_PROVIDER=modal)
+# pip install agent-haas[modal]
+modal = {version = ">=0.64.0", optional = true}
+
 [tool.poetry.extras]
 # Single-purpose extras
 anthropic  = ["anthropic"]
@@ -143,6 +147,7 @@ improvement = ["gepa"]
 # Bedrock Claude also needs the `anthropic` extra: pip install agent-haas[bedrock,anthropic]
 bedrock    = ["boto3"]
 e2b        = ["e2b-code-interpreter"]
+modal      = ["modal"]
 
 # Convenience bundles
 # Good default for most users (~300 MB, no torch)

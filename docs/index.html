@@ -1193,6 +1193,26 @@ ctx.metadata[<span class="st">"sandbox_session"</span>] = <span class="kw">True<
     </tbody>
   </table>
   <p>OOM kills surface a clear <code>OOM: container exceeded memory limit</code> error (instead of opaque exit code 137) across all three execution paths — session, per-call Docker, and subprocess fallback. Container death is detected and reported as <code>SandboxError("Session container died")</code>.</p>
+
+  <h3>Execution providers — local or third-party</h3>
+  <p>Code execution runs self-hosted by default, but the session sandbox is pluggable via <code>SANDBOX_PROVIDER</code>. Each provider implements the same surface (async context manager + <code>run_code(code, timeout) → SandboxResult</code> + <code>is_available()</code>) and is stored under the same metadata key, so the agent's <code>RunCodeTool</code> is unchanged regardless of backend.</p>
+  <table>
+    <thead><tr><th><code>SANDBOX_PROVIDER</code></th><th>Backend</th><th>Setup</th></tr></thead>
+    <tbody>
+      <tr><td><code>docker</code> (default)</td><td>Local Docker container — <code>runc</code> / gVisor / Kata via <code>SANDBOX_RUNTIME</code></td><td>Docker on host</td></tr>
+      <tr><td><code>e2b</code></td><td>E2B cloud micro-VM (~150 ms start, purpose-built for AI code)</td><td><code>pip install agent-haas[e2b]</code> + <code>E2B_API_KEY</code></td></tr>
+      <tr><td><code>modal</code></td><td>Modal serverless container (GPU-capable)</td><td><code>pip install agent-haas[modal]</code> + <code>MODAL_TOKEN_ID/SECRET</code></td></tr>
+    </tbody>
+  </table>
+<pre><code><span class="cm"># Offload execution to E2B's cloud sandbox</span>
+SANDBOX_PROVIDER=e2b
+E2B_API_KEY=e2b_xxxx
+
+<span class="cm"># …or Modal serverless containers</span>
+SANDBOX_PROVIDER=modal
+MODAL_TOKEN_ID=ak-xxxx
+MODAL_TOKEN_SECRET=as-xxxx</code><span class="code-lang">bash</span></pre>
+  <p style="color:var(--muted);font-size:13px">A provider falls back gracefully: if its SDK or credentials are missing, <code>is_available()</code> returns false and the run proceeds without a persistent session. Adding another backend (Daytona, Firecracker, …) is just implementing the three-method surface and registering a selector branch.</p>
 </section>
 
 <section class="section" id="skills">
