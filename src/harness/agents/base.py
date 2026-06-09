@@ -25,6 +25,8 @@ from harness.core.errors import (
     FailureClass,
     HarnessError,
     HITLRejected,
+    RateLimitError,
+    RunCancelled,
     SafetyViolation,
     ToolError,
 )
@@ -223,8 +225,16 @@ class BaseAgent:
                 await self._start_docker_session(ctx)
 
                 while ctx.is_budget_ok():
-                    # 3a. Check real-time feedback channel
+                    # 3a. Operator cancellation (DELETE /runs/{id}) — checked
+                    # before any spend so an in-flight run stops promptly.
+                    await self._check_cancelled(ctx)
+
+                    # 3a. Real-time feedback channel
                     await self._apply_feedback(ctx, history)
+
+                    # 3a. Per-tenant cost budget — stop before the next LLM
+                    # call when the tenant is already over its monthly cap.
+                    await self._check_cost_budget(ctx)
 
                     # 3b. Fit history to context window
                     history = await self._fit_history(ctx, history)
@@ -524,6 +534,13 @@ class BaseAgent:
                 await self._record_failure(ctx, exc)
                 await self._emit_event(StepEvent.failed(ctx, str(exc)))
 
+            except RunCancelled as exc:
+                ctx.failed = True
+                ctx.failure_class = FailureClass.CANCELLED.value
+                output = "Run cancelled by operator."
+                # Not a failure to learn from — skip _record_failure.
+                await self._emit_event(StepEvent.failed(ctx, "cancelled"))
+
             except HITLRejected as exc:
                 ctx.failed = True
                 ctx.failure_class = FailureClass.INTER_AGENT_REJECT.value
@@ -719,6 +736,48 @@ class BaseAgent:
                 elif isinstance(content, str) and content.strip():
                     return content.strip()
         return "Task completed."
+
+    async def _check_cancelled(self, ctx: AgentContext) -> None:
+        """Stop the run if an operator cancelled it mid-flight.
+
+        ``ctx.metadata["cancel_check"]`` is an optional async callable (wired by
+        the runner) that returns True when the persisted run status has been
+        flipped to 'cancelled' (e.g. by DELETE /runs/{id}). Infra errors in the
+        check are swallowed — they must never abort a healthy run.
+        """
+        cancel_check = ctx.metadata.get("cancel_check")
+        if cancel_check is None:
+            return
+        try:
+            cancelled = await cancel_check()
+        except Exception as exc:
+            logger.debug("cancel_check failed for run %s: %s", ctx.run_id, exc)
+            return
+        if cancelled:
+            logger.info("Run %s cancelled by operator", ctx.run_id)
+            raise RunCancelled(context={"run_id": ctx.run_id})
+
+    async def _check_cost_budget(self, ctx: AgentContext) -> None:
+        """Enforce the per-tenant monthly cost cap before the next LLM call.
+
+        Only the over-budget signal (RateLimitError from check_budget) stops the
+        run; a Redis/infra error fails open so a transient outage can't kill
+        every run. No-op when no cost tracker is wired.
+        """
+        if self._cost_tracker is None:
+            return
+        if not getattr(self._cost_tracker, "_enforce_budget", True):
+            return
+        try:
+            await self._cost_tracker.check_budget(ctx.tenant_id)
+        except RateLimitError as exc:
+            raise BudgetExceeded(
+                str(exc),
+                failure_class=FailureClass.BUDGET_COST,
+                context={"tenant_id": ctx.tenant_id},
+            ) from exc
+        except Exception as exc:
+            logger.debug("cost budget check failed for run %s: %s", ctx.run_id, exc)
 
     def _classify_exception(self, e: Exception) -> FailureClass:
         """Map an exception to a FailureClass."""

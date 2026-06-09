@@ -82,9 +82,13 @@ class CostTracker:
         self,
         redis_client: aioredis.Redis,
         budget_usd_per_tenant: float = 100.0,
+        enforce_budget: bool = True,
     ) -> None:
         self._redis = redis_client
         self._budget = budget_usd_per_tenant
+        # When False, the agent loop records costs but never stops a run on the
+        # monthly cap (check_budget still works if called explicitly).
+        self._enforce_budget = enforce_budget
 
     def _ledger_key(self, run_id: str) -> str:
         """Return the Redis key for per-run cost records."""

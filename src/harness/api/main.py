@@ -46,7 +46,7 @@ def _failure_class_to_status(failure_class: Any) -> int:
     }
     if fc_str in client_errors:
         return 400
-    if fc_str == FailureClass.LLM_RATE_LIMIT.value:
+    if fc_str in (FailureClass.LLM_RATE_LIMIT.value, FailureClass.BUDGET_COST.value):
         return 429
     return 500
 
@@ -70,6 +70,19 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Redis not available at startup: %s", exc)
         app.state.redis = None
+
+    # Per-tenant API rate limiter (read by RateLimitMiddleware). Requires Redis;
+    # when Redis is down the middleware fails open.
+    app.state.rate_limiter = None
+    if cfg.rate_limit_enabled and app.state.redis is not None:
+        try:
+            from harness.core.rate_limiter import RateLimiter
+            app.state.rate_limiter = RateLimiter(
+                app.state.redis, default_rpm=cfg.rate_limit_rpm
+            )
+            logger.info("Rate limiter enabled (%d rpm/tenant)", cfg.rate_limit_rpm)
+        except Exception as exc:
+            logger.warning("Rate limiter init failed: %s", exc)
 
     # Prometheus metrics (create a fresh registry if running in tests)
     try:
@@ -162,6 +175,13 @@ def create_app() -> FastAPI:
     from harness.api.middleware import RequestIDMiddleware, TenantMiddleware
     app.add_middleware(TenantMiddleware)
     app.add_middleware(RequestIDMiddleware)
+
+    # Per-tenant rate limiting. The limiter itself is created in lifespan (it
+    # needs the live Redis client) and read from app.state per request; the
+    # middleware fails open when it's absent.
+    if cfg.rate_limit_enabled:
+        from harness.core.rate_limiter import RateLimitMiddleware
+        app.add_middleware(RateLimitMiddleware)
 
     # ------------------------------------------------------------------
     # Exception handlers

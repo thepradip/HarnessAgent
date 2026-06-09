@@ -149,14 +149,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
         app: ASGIApp,
-        rate_limiter: RateLimiter,
+        rate_limiter: RateLimiter | None = None,
         tenant_header: str = "X-Tenant-ID",
         default_tenant: str = "anonymous",
+        exempt_paths: tuple[str, ...] = ("/health", "/", "/ui", "/docs", "/redoc",
+                                         "/openapi.json", "/metrics"),
     ) -> None:
         super().__init__(app)
         self._limiter = rate_limiter
         self._tenant_header = tenant_header
         self._default_tenant = default_tenant
+        self._exempt_paths = exempt_paths
+
+    def _resolve_limiter(self, request: Request) -> RateLimiter | None:
+        """Prefer a limiter wired onto app.state at startup (it holds the live
+        Redis client), falling back to one passed at construction time."""
+        state_limiter = getattr(request.app.state, "rate_limiter", None)
+        return state_limiter if state_limiter is not None else self._limiter
 
     async def dispatch(
         self,
@@ -164,9 +173,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         call_next: RequestResponseEndpoint,
     ) -> Response:
         """Enforce the rate limit before passing the request downstream."""
+        if request.url.path in self._exempt_paths:
+            return await call_next(request)
+
+        limiter = self._resolve_limiter(request)
+        if limiter is None:
+            # No limiter configured (e.g. Redis unavailable) — fail open.
+            return await call_next(request)
+
         tenant_id = request.headers.get(self._tenant_header, self._default_tenant)
         try:
-            result = await self._limiter.require(tenant_id, resource="api")
+            result = await limiter.require(tenant_id, resource="api")
         except RateLimitError as exc:
             from fastapi.responses import JSONResponse
 
@@ -182,6 +199,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     "X-RateLimit-Remaining": "0",
                 },
             )
+        except Exception as exc:
+            # Redis outage or any limiter infra error must not 500 every
+            # request — fail open and let the request through.
+            logger.warning("Rate limiter unavailable, allowing request: %s", exc)
+            return await call_next(request)
 
         response = await call_next(request)
         response.headers["X-RateLimit-Remaining"] = str(result.remaining)

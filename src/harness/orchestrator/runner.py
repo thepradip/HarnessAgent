@@ -326,9 +326,18 @@ class AgentRunner:
         workspace = self._workspace_base / record.tenant_id / record.run_id
         workspace.mkdir(parents=True, exist_ok=True)
 
+        # Lets a running agent notice an operator cancellation (DELETE
+        # /runs/{id} flips the persisted status to 'cancelled'). Polled by the
+        # agent loop between steps.
+        async def _cancel_check() -> bool:
+            rec = await self.get_run(run_id)
+            return rec is not None and rec.status == "cancelled"
+
         try:
             agent = self._agent_factory(record.agent_type)
-            agent_result = await _run_agent(agent, record, workspace)
+            agent_result = await _run_agent(
+                agent, record, workspace, cancel_check=_cancel_check
+            )
 
             record.status = "completed" if getattr(agent_result, "success", False) else "failed"
             record.result = _serialise_result(agent_result)
@@ -403,7 +412,12 @@ def _serialise_result(result: Any) -> dict:
     }
 
 
-async def _run_agent(agent: Any, record: RunRecord, workspace: Path) -> Any:
+async def _run_agent(
+    agent: Any,
+    record: RunRecord,
+    workspace: Path,
+    cancel_check: Any = None,
+) -> Any:
     """Run either a BaseAgent-style agent or a legacy keyword-style agent."""
     run = agent.run
     params = inspect.signature(run).parameters
@@ -416,6 +430,8 @@ async def _run_agent(agent: Any, record: RunRecord, workspace: Path) -> Any:
         from harness.core.context import AgentContext
 
         metadata = dict(record.metadata or {})
+        if cancel_check is not None:
+            metadata["cancel_check"] = cancel_check
         ctx = AgentContext(
             run_id=record.run_id,
             tenant_id=record.tenant_id,

@@ -181,6 +181,10 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     cost_budget_usd_per_tenant: float = 100.0
     rate_limit_rpm: int = 60
+    rate_limit_enabled: bool = True
+    # Enforce the per-tenant monthly cost cap inside the agent loop. When the
+    # tenant is already over budget, the run stops before the next LLM call.
+    enforce_cost_budget: bool = True
 
     # -------------------------------------------------------------------------
     # Runtime

@@ -38,6 +38,10 @@ class FailureClass(str, Enum):
     BUDGET_STEPS = "BUDGET_STEPS"
     BUDGET_TOKENS = "BUDGET_TOKENS"
     BUDGET_TIME = "BUDGET_TIME"
+    BUDGET_COST = "BUDGET_COST"
+
+    # Cancellation (operator-initiated, e.g. DELETE /runs/{id})
+    CANCELLED = "CANCELLED"
 
     # Memory failures
     MEMORY_REDIS = "MEMORY_REDIS"
@@ -168,6 +172,18 @@ class HITLRejected(HarnessError):
     ) -> None:
         super().__init__(message, FailureClass.INTER_AGENT_REJECT, context)
         self.request_id = request_id
+
+
+class RunCancelled(HarnessError):
+    """Raised inside the agent loop when a run is cancelled by an operator
+    (e.g. DELETE /runs/{id} flipping the persisted status to 'cancelled')."""
+
+    def __init__(
+        self,
+        message: str = "Run cancelled",
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message, FailureClass.CANCELLED, context)
 
 
 class SandboxError(HarnessError):

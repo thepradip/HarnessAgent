@@ -267,6 +267,7 @@ def _build_agent(
         "cost_tracker": CostTracker(
             redis_client=redis_client,
             budget_usd_per_tenant=cfg.cost_budget_usd_per_tenant,
+            enforce_budget=getattr(cfg, "enforce_cost_budget", True),
         ),
         "checkpoint_manager": _NoopCheckpointManager(),
         "message_bus": None,
