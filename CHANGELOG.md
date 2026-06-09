@@ -4,6 +4,34 @@ All notable changes to `agent-haas` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 semantic versioning (pre-1.0: minor = features/behavior changes, patch = fixes).
 
+## [0.5.0] — 2026-06-10
+
+Capability release: closes the three gaps that most separated the harness from
+top-tier agent frameworks. Builds on 0.4.0 (cumulative). 1406 tests passing.
+
+### Added
+- **Token streaming during tool-using runs** — providers gain
+  `stream_complete()`, which streams text deltas (emitted as `token_delta`
+  step events), accumulates `tool_use`/`tool_calls` deltas into proper
+  `ToolCall`s, and returns an `LLMResponse` with the provider's **exact** token
+  usage — replacing the old `len//4` estimate that corrupted cost/budget.
+  First-class on Anthropic + OpenAI (and Bedrock-Claude via inheritance);
+  Bedrock-Converse and local degrade to `complete()`. The router falls back
+  only before the first token. Gated on `ctx.metadata["stream_tokens"]`; the
+  previous "no tools" restriction is removed so real agent runs stream.
+- **MCP server mode** (`harness.mcp` package) — exposes the built-in tools and
+  a `run_agent` capability over MCP (stdio), so Claude Code, IDEs, and other
+  MCP hosts can drive the harness. Launch with `harness-mcp` or
+  `python -m harness.mcp`. Import-safe without the `mcp` SDK; HTTP transport is
+  stubbed for a follow-up.
+
+### Fixed
+- **Live events** — `GET /runs/{id}/steps` listened on a pub/sub channel nothing
+  published to (`EventBus` was never instantiated). It now reads the same Redis
+  stream the worker writes to (like `/runs/{id}/stream`), and `EventBus` is a
+  thin wrapper over that stream — one event path. Live step and `token_delta`
+  events now reach clients.
+
 ## [0.4.0] — 2026-06-10
 
 A large correctness, security, and enforcement release. ~70 reviewed bugs fixed
@@ -86,4 +114,5 @@ now actually enforce. Test suite grew from 1084 to 1363 passing.
 See the git history. 0.3.x covered the sandbox provider work (E2B, Modal),
 messaging/tools test coverage, and the initial public release of the harness.
 
+[0.5.0]: https://github.com/thepradip/HarnessAgent/releases/tag/v0.5.0
 [0.4.0]: https://github.com/thepradip/HarnessAgent/releases/tag/v0.4.0
