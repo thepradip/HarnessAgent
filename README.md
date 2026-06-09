@@ -25,6 +25,21 @@ pip install agent-haas[all,embed-full]                    # + sentence-transform
 
 ---
 
+## Documentation
+
+📖 **Full technical docs:** **[thepradip.github.io/HarnessAgent](https://thepradip.github.io/HarnessAgent/)** — LLM routing & cost-aware multi-vendor tiers, paged context engineering, GEPA/RLVR self-improvement, safety & HITL, sandbox providers (Docker / E2B / Modal), and the REST API.
+
+[![HarnessAgent documentation site](assets/screenshots/docs-overview.png)](https://thepradip.github.io/HarnessAgent/)
+
+<details>
+<summary>📄 Full documentation page preview (features · frameworks · quick start)</summary>
+
+[![HarnessAgent docs — full page](assets/screenshots/docs-features.png)](https://thepradip.github.io/HarnessAgent/)
+
+</details>
+
+---
+
 ## What is this?
 
 Think about what actually happens when you run an AI agent in production. The LLM call needs to work. It needs to not cost $500 a day. It needs to not loop forever when the API is slow. It needs to remember context from three messages ago — and intelligently *discard* context that no longer matters. It needs to not crash your app when one provider goes down. And when it does fail, it needs to tell you *exactly why*.
