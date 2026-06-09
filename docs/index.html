@@ -1264,6 +1264,15 @@ ctx.metadata[<span class="st">"policy"</span>] = <span class="cl">HarnessPolicy<
 )</code><span class="code-lang">python</span></pre>
   <h3>Tool result size cap</h3>
   <p>Large tool outputs (full-table SQL dumps, verbose file reads) are capped at <strong>8,000 chars</strong> before entering agent history, preventing a single noisy call from consuming the whole context window. The truncation suffix shows the original byte count, and <code>result.metadata</code> carries <code>{"truncated": True, "original_chars": N}</code>. The <code>FailureCategory.OUTPUT_TRUNCATED</code> category surfaces this automatically during eval.</p>
+
+  <h3>Budgets, rate limits &amp; cancellation</h3>
+  <p>Three independent guards bound what a run is allowed to consume, enforced inside the agent loop and at the API edge:</p>
+  <ul>
+    <li><strong>Per-tenant cost cap</strong> — before every LLM call the loop checks the tenant's accumulated monthly spend against <code>COST_BUDGET_USD_PER_TENANT</code>. Over budget, the run stops immediately with failure class <code>BUDGET_COST</code> (HTTP 429) before incurring further spend. A Redis/infra error in the check fails <em>open</em> so a transient outage never kills a healthy run. Toggle with <code>ENFORCE_COST_BUDGET</code>.</li>
+    <li><strong>Step / token / time budgets</strong> — <code>ctx.tick()</code> raises <code>BudgetExceeded</code> with <code>BUDGET_STEPS</code>, <code>BUDGET_TOKENS</code>, or <code>BUDGET_TIME</code> the moment a per-run limit is crossed.</li>
+    <li><strong>API rate limiting</strong> — a Redis sliding-window limiter enforces <code>RATE_LIMIT_RPM</code> requests/minute per tenant via middleware. Health and docs paths are exempt; when Redis is unavailable the limiter fails open (requests pass) rather than returning 500s. Responses carry <code>X-RateLimit-Remaining</code> / <code>X-RateLimit-Reset</code>; a denied request returns 429 with <code>Retry-After</code>. Toggle with <code>RATE_LIMIT_ENABLED</code>.</li>
+    <li><strong>Operator cancellation</strong> — <code>DELETE /runs/{id}</code> flips the persisted run status to <code>cancelled</code>; the loop polls that status between steps and stops a <em>running</em> agent with failure class <code>CANCELLED</code> (not just pending runs).</li>
+  </ul>
 </section>
 
 <!-- ══════════════════════ NEXUSSQL ══════════════════════ -->
@@ -1597,7 +1606,7 @@ decision = <span class="kw">await</span> hitl.<span class="fn">await_decision</s
     <span class="kw">raise</span> <span class="cl">HITLRejected</span>(decision.reason)</code><span class="code-lang">python</span></pre>
 
   <h3>Per-tenant policies</h3>
-  <p>Policies are stored in Redis keyed by <code>tenant_id</code> and loaded at the start of each run. They control: allowed tools, blocked SQL keywords, PII redaction rules, max cost per run, and HITL trigger conditions. Policies can be updated at runtime without restarting the server.</p>
+  <p>Policies are stored in Redis keyed by <code>tenant_id</code> and loaded at the start of each run. They control: allowed tools, blocked SQL keywords, PII redaction rules, max cost per run, and HITL trigger conditions. Policies persist without expiry — a tenant's restrictions never silently lapse back to the permissive default — and can be updated at runtime without restarting the server.</p>
 </section>
 
 <!-- ══════════════════════ OBSERVABILITY ══════════════════════ -->
@@ -1707,6 +1716,11 @@ decision = <span class="kw">await</span> hitl.<span class="fn">await_decision</s
         <td><span class="tag green">GET</span></td>
         <td><code>/runs/{id}/trace</code></td>
         <td>Full span tree as JSON. Includes all 7 SpanKind types with timing and metadata.</td>
+      </tr>
+      <tr>
+        <td><span class="tag red">DELETE</span></td>
+        <td><code>/runs/{id}</code></td>
+        <td>Cancel a pending <em>or running</em> run. Flips the persisted status to <code>cancelled</code>; an in-flight agent notices between steps and stops with failure class <code>CANCELLED</code>.</td>
       </tr>
     </tbody>
   </table>
