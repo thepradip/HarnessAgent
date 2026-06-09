@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -16,6 +17,34 @@ from harness.core.errors import FailureClass, HarnessError, ToolError
 logger = logging.getLogger(__name__)
 
 _ENV_VAR_RE = re.compile(r"\$\{([^}]+)\}")
+
+# Host env vars safe to pass to MCP server subprocesses. Everything else
+# (API keys, cloud credentials, tokens) is withheld unless the server config
+# explicitly sets it in `env` or opts in via `inherit_env: true`.
+_SAFE_ENV_VARS = frozenset(
+    {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "TZ", "TMPDIR"}
+)
+
+
+def _build_subprocess_env(
+    config_env: dict[str, str], *, inherit_env: bool = False
+) -> dict[str, str]:
+    """Build the environment for an MCP server subprocess.
+
+    By default only a minimal allowlist (PATH, HOME, USER, LANG, LC_*, TMPDIR,
+    …) is inherited from the host, merged with the server's configured env.
+    Set ``inherit_env=True`` in the server config to pass the full host
+    environment (explicit opt-in escape hatch).
+    """
+    if inherit_env:
+        base = dict(os.environ)
+    else:
+        base = {
+            k: v
+            for k, v in os.environ.items()
+            if k in _SAFE_ENV_VARS or k.startswith("LC_")
+        }
+    return {**base, **config_env}
 
 
 def _interpolate_env(value: str) -> str:
@@ -47,6 +76,7 @@ class MCPServerConfig:
     url: str | None = None            # for sse transport
     env: dict[str, str] = field(default_factory=dict)
     timeout: float = 30.0
+    inherit_env: bool = False  # opt-in: pass full host env to the subprocess
 
 
 class MCPToolWrapper:
@@ -124,9 +154,7 @@ class MCPToolAdapter:
     def __init__(self, config: MCPServerConfig) -> None:
         self._config = config
         self._session: Any = None
-        self._context_manager: Any = None
-        self._read_cm: Any = None
-        self._write_cm: Any = None
+        self._exit_stack: contextlib.AsyncExitStack | None = None
         self._tools: list[MCPToolWrapper] = []
 
     async def connect(self) -> list[MCPToolWrapper]:
@@ -134,7 +162,13 @@ class MCPToolAdapter:
 
         Returns a list of MCPToolWrapper instances, one per tool.
         Raises HarnessError(MCP_CONNECT_ERROR) on connection failure.
+
+        Transport/session context managers are held on an AsyncExitStack so
+        their __aexit__ runs in disconnect() and the server subprocess is
+        reaped. Note: anyio cancel-scope rules require connect() and
+        disconnect() to be called from the same task.
         """
+        exit_stack = contextlib.AsyncExitStack()
         try:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
@@ -146,16 +180,20 @@ class MCPToolAdapter:
                         "but no command was provided.",
                         failure_class=FailureClass.MCP_CONNECT_ERROR,
                     )
-                env = {**os.environ, **self._config.env}
+                env = _build_subprocess_env(
+                    self._config.env, inherit_env=self._config.inherit_env
+                )
                 server_params = StdioServerParameters(
                     command=self._config.command[0],
                     args=self._config.command[1:],
                     env=env,
                 )
-                self._read_cm, self._write_cm = await stdio_client(
-                    server_params
-                ).__aenter__()
-                self._session = ClientSession(self._read_cm, self._write_cm)
+                read_stream, write_stream = await exit_stack.enter_async_context(
+                    stdio_client(server_params)
+                )
+                self._session = await exit_stack.enter_async_context(
+                    ClientSession(read_stream, write_stream)
+                )
 
             elif self._config.transport == "sse":
                 if not self._config.url:
@@ -169,10 +207,12 @@ class MCPToolAdapter:
                 except ImportError:
                     from mcp.client.http import http_client as sse_client  # type: ignore[no-redef]
 
-                self._read_cm, self._write_cm = await sse_client(
-                    self._config.url
-                ).__aenter__()
-                self._session = ClientSession(self._read_cm, self._write_cm)
+                read_stream, write_stream = await exit_stack.enter_async_context(
+                    sse_client(self._config.url)
+                )
+                self._session = await exit_stack.enter_async_context(
+                    ClientSession(read_stream, write_stream)
+                )
             else:
                 raise HarnessError(
                     f"Unsupported transport: {self._config.transport}",
@@ -180,7 +220,6 @@ class MCPToolAdapter:
                 )
 
             # Initialize the MCP session
-            await self._session.__aenter__()
             await self._session.initialize()
 
             # List tools
@@ -196,6 +235,7 @@ class MCPToolAdapter:
                 )
                 self._tools.append(wrapper)
 
+            self._exit_stack = exit_stack
             logger.info(
                 "Connected to MCP server '%s', discovered %d tools",
                 self._config.name,
@@ -204,36 +244,34 @@ class MCPToolAdapter:
             return self._tools
 
         except HarnessError:
+            await self._safe_close(exit_stack)
             raise
         except Exception as exc:
+            await self._safe_close(exit_stack)
             raise HarnessError(
                 f"Failed to connect to MCP server '{self._config.name}': {exc}",
                 failure_class=FailureClass.MCP_CONNECT_ERROR,
                 context={"server_name": self._config.name, "transport": self._config.transport},
             ) from exc
 
-    async def disconnect(self) -> None:
-        """Close the MCP session and underlying transport."""
+    async def _safe_close(self, exit_stack: contextlib.AsyncExitStack) -> None:
+        """Unwind an exit stack, swallowing (but logging) cleanup errors."""
         try:
-            if self._session is not None:
-                await self._session.__aexit__(None, None, None)
-                self._session = None
-            if self._write_cm is not None:
-                try:
-                    await self._write_cm.aclose()
-                except Exception:
-                    pass
-                self._write_cm = None
-            if self._read_cm is not None:
-                try:
-                    await self._read_cm.aclose()
-                except Exception:
-                    pass
-                self._read_cm = None
+            await exit_stack.aclose()
         except Exception as exc:
             logger.warning(
-                "Error disconnecting from MCP server '%s': %s", self._config.name, exc
+                "Error closing MCP transport for '%s': %s", self._config.name, exc
             )
+
+    async def disconnect(self) -> None:
+        """Close the MCP session and underlying transport.
+
+        Must run in the same task that called connect() (anyio cancel scopes).
+        """
+        self._session = None
+        exit_stack, self._exit_stack = self._exit_stack, None
+        if exit_stack is not None:
+            await self._safe_close(exit_stack)
 
     async def list_resources(self) -> list[Any]:
         """List MCP resources exposed by the server."""
@@ -283,6 +321,7 @@ def load_mcp_servers_from_config(
             url=entry.get("url"),
             env=entry.get("env", {}),
             timeout=float(entry.get("timeout", 30.0)),
+            inherit_env=bool(entry.get("inherit_env", False)),
         )
         configs.append(cfg)
         logger.debug("Loaded MCP server config: %s (%s)", cfg.name, cfg.transport)

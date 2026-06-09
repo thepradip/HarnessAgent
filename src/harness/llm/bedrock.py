@@ -165,15 +165,29 @@ class BedrockConverseProvider:
     @staticmethod
     def _to_converse_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
+
+        def _push(role: str, text: str) -> None:
+            if not text:
+                return
+            # Converse requires alternating roles — merge consecutive turns.
+            if out and out[-1]["role"] == role:
+                out[-1]["content"][0]["text"] += "\n" + text
+            else:
+                out.append({"role": role, "content": [{"text": text}]})
+
         for m in messages:
             role = m.get("role")
-            if role not in ("user", "assistant"):
-                continue  # system handled separately; skip tool/other roles
             content = m.get("content", "")
+            if role == "tool":
+                # Fold tool results into a user turn instead of dropping them.
+                _push("user", f"[Tool result {m.get('tool_use_id', '')}]: {content}")
+                continue
+            if role not in ("user", "assistant"):
+                continue  # system handled separately
             text = content if isinstance(content, str) else " ".join(
                 b.get("text", "") for b in content if isinstance(b, dict)
             )
-            out.append({"role": role, "content": [{"text": text}]})
+            _push(role, text)
         return out
 
     async def complete(

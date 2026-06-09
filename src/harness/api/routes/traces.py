@@ -102,14 +102,17 @@ async def get_span(
     """
     Return a single span by span_id.
 
-    Raises 404 if the span is not found or has expired.
+    Raises 404 if the span is not found, has expired, or belongs to another
+    tenant (404 on mismatch so span_ids cannot be enumerated cross-tenant).
     """
     from harness.observability.trace_recorder import TraceRecorder
     cfg = get_config()
     recorder = TraceRecorder.create(redis_url=cfg.redis_url)
 
     span = await recorder.get_span(span_id)
-    if span is None:
+    # Spans recorded without an AgentContext carry tenant_id="" — treat those
+    # conservatively as not visible to any tenant rather than world-readable.
+    if span is None or not span.tenant_id or span.tenant_id != tenant_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Span not found: {span_id}",

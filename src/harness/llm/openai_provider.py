@@ -12,6 +12,7 @@ Key differences from OpenAICompatProvider (local.py):
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -137,7 +138,9 @@ class OpenAIProvider:
             if temperature is not None:
                 request["temperature"] = temperature
 
-        if tools and not self._is_reasoning:
+        # Reasoning models (o-series, gpt-5) support function calling too —
+        # only temperature must be withheld for them.
+        if tools:
             request["tools"] = [self._to_openai_tool(t) for t in tools]
             request["tool_choice"] = "auto"
 
@@ -239,7 +242,14 @@ class OpenAIProvider:
         messages: list[dict[str, Any]],
         system: str | None,
     ) -> list[dict[str, Any]]:
-        """Build the messages list, handling reasoning-model constraints."""
+        """Build the messages list, handling reasoning-model constraints.
+
+        Translates the provider-neutral harness history — assistant entries
+        carrying ``tool_calls`` ([{id, name, args}]) and tool results with
+        role "tool" + ``tool_use_id`` — into the OpenAI chat format, which
+        requires assistant ``tool_calls`` entries with JSON-string arguments
+        followed by role "tool" messages keyed by ``tool_call_id``.
+        """
         result: list[dict[str, Any]] = []
 
         if system and not self._is_reasoning:
@@ -248,7 +258,37 @@ class OpenAIProvider:
             # o1/o3/o4 don't support system role — prepend as developer message
             result.append({"role": "developer", "content": system})
 
-        result.extend(messages)
+        for msg in messages:
+            role = msg.get("role", "user")
+            if role == "tool":
+                result.append({
+                    "role": "tool",
+                    "tool_call_id": msg.get("tool_use_id")
+                    or msg.get("tool_call_id", ""),
+                    "content": msg.get("content", ""),
+                })
+                continue
+            if role == "assistant" and msg.get("tool_calls"):
+                result.append({
+                    "role": "assistant",
+                    "content": msg.get("content") or None,
+                    "tool_calls": [
+                        {
+                            "id": call.get("id", ""),
+                            "type": "function",
+                            "function": {
+                                "name": call.get("name", ""),
+                                "arguments": json.dumps(call.get("args", {})),
+                            },
+                        }
+                        for call in msg["tool_calls"]
+                    ],
+                })
+                continue
+            if role == "system" and self._is_reasoning:
+                result.append({"role": "developer", "content": msg.get("content", "")})
+                continue
+            result.append(msg)
         return result
 
     @staticmethod

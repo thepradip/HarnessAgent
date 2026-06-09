@@ -456,6 +456,75 @@ async def test_store_record_use_missing_skill_no_error():
 
 
 # ===========================================================================
+# SkillStore — tenant isolation
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_store_get_denies_cross_tenant_access():
+    """A tenant that learns another tenant's skill_id cannot read the artifact."""
+    store = SkillStore(_redis())
+    s = _skill(tenant_id="t1")
+    await store.save(s)
+
+    assert await store.get(s.skill_id, tenant_id="t2") is None
+    assert (await store.get(s.skill_id, tenant_id="t1")).skill_id == s.skill_id
+
+
+@pytest.mark.asyncio
+async def test_store_get_without_tenant_skips_check():
+    """tenant_id=None preserves the legacy no-check behaviour."""
+    store = SkillStore(_redis())
+    s = _skill(tenant_id="t1")
+    await store.save(s)
+    assert (await store.get(s.skill_id)).skill_id == s.skill_id
+
+
+@pytest.mark.asyncio
+async def test_store_record_use_denies_cross_tenant():
+    """record_use from the wrong tenant must not modify the artifact."""
+    store = SkillStore(_redis())
+    s = _skill(tenant_id="t1")
+    await store.save(s)
+
+    await store.record_use(s.skill_id, "t2")  # wrong tenant — ignored
+    loaded = await store.get(s.skill_id, tenant_id="t1")
+    assert loaded.use_count == 0
+
+    await store.record_use(s.skill_id, "t1")  # owner — counted
+    loaded = await store.get(s.skill_id, tenant_id="t1")
+    assert loaded.use_count == 1
+
+
+@pytest.mark.asyncio
+async def test_store_delete_denies_cross_tenant():
+    """delete from the wrong tenant must leave the artifact intact."""
+    store = SkillStore(_redis())
+    s = _skill(tenant_id="t1")
+    await store.save(s)
+
+    await store.delete(s.skill_id, "t2")  # wrong tenant — ignored
+    assert await store.get(s.skill_id, tenant_id="t1") is not None
+
+    await store.delete(s.skill_id, "t1")
+    assert await store.get(s.skill_id) is None
+
+
+@pytest.mark.asyncio
+async def test_store_update_validation_denies_cross_tenant():
+    """update_validation with the wrong tenant returns None and changes nothing."""
+    store = SkillStore(_redis())
+    s = _skill(tenant_id="t1")
+    await store.save(s)
+
+    result = await store.update_validation(
+        s.skill_id, ValidationStatus.BROKEN, tenant_id="t2"
+    )
+    assert result is None
+    loaded = await store.get(s.skill_id, tenant_id="t1")
+    assert loaded.validation_status == ValidationStatus.UNVALIDATED
+
+
+# ===========================================================================
 # SkillStore — validation
 # ===========================================================================
 

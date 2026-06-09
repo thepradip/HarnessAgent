@@ -103,11 +103,37 @@ class AgentMessageBus:
             logger.error("AgentMessageBus.send failed: %s", exc)
             raise
 
+    async def snapshot_stream_ids(self, agent_id: str) -> dict[str, str]:
+        """
+        Capture the current last entry ID of ``agent_id``'s direct stream and
+        the broadcast stream.
+
+        Pass the result as ``last_ids`` to :meth:`subscribe` to receive every
+        message added *after* this point — including ones XADDed before the
+        subscriber's first XREAD, which ``last_id="$"`` would silently skip.
+        Nonexistent (or unreadable) streams map to ``"0"``.
+        """
+        client = await self._get_client()
+        ids: dict[str, str] = {}
+        for stream_key in (f"{_STREAM_PREFIX}{agent_id}", _BROADCAST_STREAM):
+            try:
+                entries = await client.xrevrange(stream_key, count=1)
+                ids[stream_key] = entries[0][0] if entries else "0"
+            except Exception as exc:
+                logger.debug(
+                    "snapshot_stream_ids: falling back to '0' for %s: %s",
+                    stream_key,
+                    exc,
+                )
+                ids[stream_key] = "0"
+        return ids
+
     async def subscribe(
         self,
         agent_id: str,
         message_types: list[str] | None = None,
         last_id: str = "$",
+        last_ids: dict[str, str] | None = None,
     ) -> AsyncIterator[AgentMessage]:
         """
         Async generator yielding messages for ``agent_id``.
@@ -119,6 +145,11 @@ class AgentMessageBus:
         Filters by ``message_types`` if specified.
         Expired messages are silently skipped.
         Uses XREAD with BLOCK=100ms to avoid busy-waiting.
+
+        ``last_ids`` (per-stream start IDs, e.g. from
+        :meth:`snapshot_stream_ids`) overrides ``last_id`` for the streams it
+        names — use it to avoid the ``$`` race where entries added before the
+        first XREAD are never seen.
         """
         client = await self._get_client()
         agent_stream = f"{_STREAM_PREFIX}{agent_id}"
@@ -128,6 +159,8 @@ class AgentMessageBus:
             agent_stream: last_id,
             _BROADCAST_STREAM: last_id,
         }
+        if last_ids:
+            cursors.update({k: v for k, v in last_ids.items() if k in cursors})
 
         try:
             while True:
@@ -185,9 +218,13 @@ class AgentMessageBus:
         recipient_id: str,
         payload: dict[str, Any],
         timeout: float = 30.0,
+        message_types: list[str] | None = None,
     ) -> AgentMessage:
         """
-        Send a query and await a correlated result or error reply.
+        Send a query and await a correlated reply.
+
+        ``message_types`` filters which reply types are accepted
+        (default: ``["result", "error"]``).
 
         Raises InterAgentTimeout if no reply arrives within ``timeout`` seconds.
         """
@@ -201,16 +238,29 @@ class AgentMessageBus:
             payload=payload,
             correlation_id=correlation_id,
         )
+
+        # Snapshot the reply-stream position BEFORE sending so a reply
+        # XADDed between send() and the subscriber's first XREAD isn't lost.
+        start_ids = await self.snapshot_stream_ids(sender_id)
         await self.send(query_msg)
 
-        deadline = asyncio.get_running_loop().time() + timeout
-        async for reply in self.subscribe(
-            sender_id, message_types=["result", "error"]
-        ):
-            if reply.correlation_id == correlation_id:
-                return reply
-            if asyncio.get_running_loop().time() > deadline:
-                break
+        async def _await_reply() -> AgentMessage | None:
+            async for reply in self.subscribe(
+                sender_id,
+                message_types=message_types or ["result", "error"],
+                last_ids=start_ids,
+            ):
+                if reply.correlation_id == correlation_id:
+                    return reply
+            return None  # subscriber was cancelled before a reply matched
+
+        try:
+            reply = await asyncio.wait_for(_await_reply(), timeout=timeout)
+        except asyncio.TimeoutError:
+            reply = None
+
+        if reply is not None:
+            return reply
 
         raise InterAgentTimeout(
             f"No reply from {recipient_id} within {timeout}s",
@@ -236,6 +286,9 @@ class AgentMessageBus:
         pending: set[str] = set(recipient_ids)
         replies: list[AgentMessage] = []
 
+        # Snapshot the reply-stream position BEFORE sending (see request()).
+        start_ids = await self.snapshot_stream_ids(sender_id)
+
         # Send to all recipients in parallel
         send_tasks = [
             self.send(
@@ -251,18 +304,24 @@ class AgentMessageBus:
         ]
         await asyncio.gather(*send_tasks, return_exceptions=True)
 
-        # Collect replies
-        deadline = asyncio.get_running_loop().time() + timeout
-        async for reply in self.subscribe(
-            sender_id, message_types=["result", "error"]
-        ):
-            if reply.correlation_id == correlation_id and reply.sender_id in pending:
-                replies.append(reply)
-                pending.discard(reply.sender_id)
-                if not pending:
-                    break
-            if asyncio.get_running_loop().time() > deadline:
-                break
+        # Collect replies until all recipients answered or timeout elapses
+        async def _collect() -> None:
+            async for reply in self.subscribe(
+                sender_id, message_types=["result", "error"], last_ids=start_ids
+            ):
+                if (
+                    reply.correlation_id == correlation_id
+                    and reply.sender_id in pending
+                ):
+                    replies.append(reply)
+                    pending.discard(reply.sender_id)
+                    if not pending:
+                        return
+
+        try:
+            await asyncio.wait_for(_collect(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass  # partial results are acceptable
 
         return replies
 

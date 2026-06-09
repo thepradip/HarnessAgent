@@ -341,14 +341,29 @@ class SkillStore:
         )
         return skill
 
-    async def get(self, skill_id: str) -> SkillArtifact | None:
-        """Load by ID. Returns None on missing, corrupt, or Redis error."""
+    async def get(
+        self, skill_id: str, tenant_id: str | None = None
+    ) -> SkillArtifact | None:
+        """Load by ID. Returns None on missing, corrupt, or Redis error.
+
+        When ``tenant_id`` is provided, the loaded skill's tenant must match —
+        otherwise None is returned (tenant isolation). ``tenant_id=None``
+        skips the check for backwards compatibility with single-tenant callers.
+        """
         try:
             raw = await self._redis.get(self._key(skill_id))
             if raw is None:
                 return None
             data = json.loads(raw if isinstance(raw, str) else raw.decode())
-            return SkillArtifact.from_dict(data)
+            skill = SkillArtifact.from_dict(data)
+            if tenant_id is not None and skill.tenant_id != tenant_id:
+                logger.warning(
+                    "SkillStore.get(%s): tenant mismatch (requested by %s, "
+                    "owned by %s) — denying access",
+                    skill_id, tenant_id, skill.tenant_id,
+                )
+                return None
+            return skill
         except (json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
             logger.warning("SkillStore.get(%s) corrupt data: %s", skill_id, exc)
             return None
@@ -357,8 +372,20 @@ class SkillStore:
             return None
 
     async def delete(self, skill_id: str, tenant_id: str) -> None:
-        """Remove artifact, index entry, and flag entry. Never raises."""
+        """Remove artifact, index entry, and flag entry. Never raises.
+
+        The artifact key is only deleted when the skill belongs to
+        ``tenant_id`` (or cannot be loaded at all — corrupt-entry cleanup).
+        """
         try:
+            skill = await self.get(skill_id)
+            if skill is not None and skill.tenant_id != tenant_id:
+                logger.warning(
+                    "SkillStore.delete(%s): tenant mismatch (requested by %s, "
+                    "owned by %s) — skipping",
+                    skill_id, tenant_id, skill.tenant_id,
+                )
+                return
             await self._redis.delete(self._key(skill_id))
             await self._redis.zrem(self._index_key(tenant_id), skill_id)
             await self._redis.srem(self._flags_key(tenant_id), skill_id)
@@ -396,7 +423,7 @@ class SkillStore:
                     skill_id = hit.metadata.get("skill_id")
                     if not skill_id:
                         continue
-                    skill = await self.get(skill_id)
+                    skill = await self.get(skill_id, tenant_id=tenant_id)
                     if skill is None:
                         continue
                     if exclude_broken and skill.validation_status == ValidationStatus.BROKEN:
@@ -418,7 +445,7 @@ class SkillStore:
                 )
                 for sid in raw_ids:
                     sid_str = sid if isinstance(sid, str) else sid.decode()
-                    skill = await self.get(sid_str)
+                    skill = await self.get(sid_str, tenant_id=tenant_id)
                     if skill is None:
                         continue
                     if exclude_broken and skill.validation_status == ValidationStatus.BROKEN:
@@ -459,8 +486,11 @@ class SkillStore:
     # ------------------------------------------------------------------
 
     async def record_use(self, skill_id: str, tenant_id: str) -> None:
-        """Increment use_count and refresh the index score."""
-        skill = await self.get(skill_id)
+        """Increment use_count and refresh the index score.
+
+        The skill must belong to ``tenant_id``; cross-tenant updates are ignored.
+        """
+        skill = await self.get(skill_id, tenant_id=tenant_id)
         if skill is None:
             return
         skill.use_count += 1
@@ -471,14 +501,16 @@ class SkillStore:
         skill_id: str,
         status: ValidationStatus,
         env_requirements: dict[str, str] | None = None,
+        tenant_id: str | None = None,
     ) -> SkillArtifact | None:
         """Set validation status, check requirements, auto-detect staleness.
 
         ``env_requirements`` — {package: installed_version} from the runtime
         environment (e.g. parsed from pip freeze). If provided, any
         requirement mismatch forces status to BROKEN regardless of ``status``.
+        ``tenant_id`` — when provided, the skill must belong to this tenant.
         """
-        skill = await self.get(skill_id)
+        skill = await self.get(skill_id, tenant_id=tenant_id)
         if skill is None:
             return None
 
@@ -519,7 +551,7 @@ class SkillStore:
 
         for sid in all_ids:
             sid_str = sid if isinstance(sid, str) else sid.decode()
-            skill = await self.get(sid_str)
+            skill = await self.get(sid_str, tenant_id=tenant_id)
             if skill is None:
                 continue
             counts[skill.validation_status.value] = counts.get(skill.validation_status.value, 0) + 1

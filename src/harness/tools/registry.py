@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any
 
 import jsonschema
@@ -17,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 _TOOL_CALLS_METRIC = "tool_calls_total"
 _TOOL_RESULT_MAX_CHARS = 8_000  # max chars before truncating tool output entering agent history
+
+# Env var to restore legacy fail-open behaviour when the safety pipeline errors
+_SAFETY_FAIL_OPEN_ENV = "HARNESS_SAFETY_FAIL_OPEN"
 
 
 class ToolRegistry:
@@ -31,11 +35,23 @@ class ToolRegistry:
         safety_pipeline: Any | None = None,
         audit_logger: Any | None = None,
         metrics: Any | None = None,
+        safety_fail_open: bool | None = None,
     ) -> None:
         self._tools: dict[str, ToolExecutor] = {}
         self._safety_pipeline = safety_pipeline
         self._audit_logger = audit_logger
         self._metrics = metrics
+        # None → defer to the HARNESS_SAFETY_FAIL_OPEN env var at call time.
+        # Default behaviour is fail-closed: a safety pipeline error blocks the call.
+        self._safety_fail_open = safety_fail_open
+
+    def _safety_fails_open(self) -> bool:
+        """True when a safety pipeline error should let the tool call proceed."""
+        if self._safety_fail_open is not None:
+            return self._safety_fail_open
+        return os.environ.get(_SAFETY_FAIL_OPEN_ENV, "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
 
     # ------------------------------------------------------------------
     # Registration
@@ -149,9 +165,26 @@ class ToolRegistry:
             except SafetyViolation:
                 raise
             except Exception as exc:
-                logger.warning(
-                    "Safety pipeline check_step raised unexpected error: %s", exc
-                )
+                if self._safety_fails_open():
+                    logger.warning(
+                        "Safety pipeline check_step raised unexpected error "
+                        "(fail-open enabled, allowing call): %s", exc
+                    )
+                else:
+                    # Fail closed: a broken safety pipeline must not let
+                    # unchecked tool calls through.
+                    logger.error(
+                        "Safety pipeline check_step raised unexpected error "
+                        "(failing closed, blocking call): %s", exc
+                    )
+                    raise SafetyViolation(
+                        f"Tool call '{call.name}' blocked: safety pipeline error "
+                        f"({exc}). Set {_SAFETY_FAIL_OPEN_ENV}=1 or "
+                        "safety_fail_open=True to restore fail-open behaviour.",
+                        guard_source="tool_registry",
+                        failure_class=FailureClass.SAFETY_STEP,
+                        context={"run_id": ctx.run_id, "tool_name": call.name},
+                    ) from exc
 
         # 4. Execute with timeout
         timeout_seconds = getattr(tool, "timeout_seconds", 30.0)

@@ -623,7 +623,8 @@ async def test_run_code_tool_skips_dead_session(tmp_path):
     mock_proc.returncode = 0
     mock_proc.communicate = AsyncMock(return_value=(b"subprocess_out\n", b""))
 
-    tool = RunCodeTool()
+    # subprocess fallback requires explicit opt-in since the sandbox-bypass fix
+    tool = RunCodeTool(allow_unsandboxed=True)
     ctx = MagicMock()
     ctx.metadata = {"docker_session": dead_session}
     ctx.run_id = "r1"

@@ -124,6 +124,17 @@ class OpenAICompatProvider:
                     result.insert(0, {"role": "system", "content": msg.get("content", "")})
                     system_prepended = True
                 continue
+            if role == "tool":
+                # Local servers reject bare "tool" roles (no native tool_calls
+                # turn precedes them here) — fold the result into a user turn.
+                result.append({
+                    "role": "user",
+                    "content": (
+                        f"[Tool result {msg.get('tool_use_id', '')}]: "
+                        f"{msg.get('content', '')}"
+                    ),
+                })
+                continue
             result.append({"role": role, "content": msg.get("content", "")})
 
         # Prepend system as first user turn if model doesn't support system role

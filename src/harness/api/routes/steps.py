@@ -143,13 +143,19 @@ async def stream_run_steps(
     try:
         import json as _json
         run_data = _json.loads(raw if isinstance(raw, str) else raw.decode())
-        if run_data.get("tenant_id") != tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied",
-            )
-    except (ValueError, KeyError):
-        pass
+        record_tenant = run_data.get("tenant_id")
+    except (ValueError, KeyError, AttributeError):
+        # Corrupt or non-JSON run record — fail closed (404) rather than
+        # skipping the ownership check and serving the stream anyway.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Run not found: {run_id}",
+        )
+    if record_tenant != tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
 
     # Try to use sse-starlette for proper SSE support
     try:

@@ -359,6 +359,17 @@ class AgentRunner:
             self._inflight.discard(run_id)
 
         record.completed_at = datetime.now(UTC)
+
+        # Don't clobber a concurrent cancel_run(): re-read the persisted
+        # status and keep "cancelled" if it was set while the agent ran.
+        persisted = await self.get_run(run_id)
+        if persisted is not None and persisted.status == "cancelled":
+            logger.info(
+                "Run %s was cancelled during execution — keeping cancelled status",
+                run_id,
+            )
+            return persisted
+
         await self.update_run(record)
 
         logger.info(

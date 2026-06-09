@@ -99,7 +99,14 @@ class AnthropicProvider:
     def _map_messages(
         self, messages: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """Convert generic message dicts to Anthropic-compatible format."""
+        """Convert generic message dicts to Anthropic-compatible format.
+
+        The harness history is provider-neutral: assistant entries may carry
+        ``tool_calls`` ([{id, name, args}]) and tool results use role "tool"
+        with a ``tool_use_id``. Anthropic expects tool_use blocks on the
+        assistant turn and tool_result blocks inside a *user* turn, with
+        consecutive results merged into one user message.
+        """
         result: list[dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role", "user")
@@ -107,10 +114,41 @@ class AnthropicProvider:
             # Skip system messages — handled separately
             if role == "system":
                 continue
-            if isinstance(content, str):
-                result.append({"role": role, "content": content})
-            else:
-                result.append({"role": role, "content": content})
+            if role == "tool":
+                block = {
+                    "type": "tool_result",
+                    "tool_use_id": msg.get("tool_use_id", ""),
+                    "content": content if isinstance(content, str) else str(content),
+                }
+                prev = result[-1] if result else None
+                if (
+                    prev is not None
+                    and prev["role"] == "user"
+                    and isinstance(prev["content"], list)
+                    and prev["content"]
+                    and isinstance(prev["content"][-1], dict)
+                    and prev["content"][-1].get("type") == "tool_result"
+                ):
+                    prev["content"].append(block)
+                else:
+                    result.append({"role": "user", "content": [block]})
+                continue
+            if role == "assistant" and msg.get("tool_calls"):
+                blocks: list[dict[str, Any]] = []
+                if isinstance(content, str) and content:
+                    blocks.append({"type": "text", "text": content})
+                elif isinstance(content, list):
+                    blocks.extend(content)
+                for call in msg["tool_calls"]:
+                    blocks.append({
+                        "type": "tool_use",
+                        "id": call.get("id", ""),
+                        "name": call.get("name", ""),
+                        "input": call.get("args", {}),
+                    })
+                result.append({"role": "assistant", "content": blocks})
+                continue
+            result.append({"role": role, "content": content})
         return result
 
     async def complete(

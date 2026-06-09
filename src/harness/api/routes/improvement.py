@@ -348,6 +348,22 @@ async def list_hitl_pending(
     return [ApprovalRequestResponse.from_request(r) for r in requests]
 
 
+async def _require_owned_hitl_request(
+    hitl: Any, request_id: str, tenant_id: str
+) -> None:
+    """Enforce tenant ownership of a HITL request before resolution.
+
+    Raises:
+        HTTPException 404 if the request does not exist or belongs to another
+            tenant (404 on mismatch so request_ids cannot be enumerated).
+    """
+    req = await hitl.get(request_id)
+    if req is None or req.tenant_id != tenant_id:
+        raise HTTPException(
+            status_code=404, detail=f"HITL request not found: {request_id}"
+        )
+
+
 @router.post("/hitl/{request_id}/approve", response_model=ApprovalRequestResponse)
 async def approve_hitl(
     request_id: str,
@@ -356,6 +372,7 @@ async def approve_hitl(
     hitl: Any = Depends(get_hitl_manager),
 ) -> ApprovalRequestResponse:
     """Approve a HITL request."""
+    await _require_owned_hitl_request(hitl, request_id, tenant_id)
     try:
         req = await hitl.approve(request_id, resolved_by=body.resolved_by)
         return ApprovalRequestResponse.from_request(req)
@@ -373,6 +390,7 @@ async def reject_hitl(
     hitl: Any = Depends(get_hitl_manager),
 ) -> ApprovalRequestResponse:
     """Reject a HITL request."""
+    await _require_owned_hitl_request(hitl, request_id, tenant_id)
     try:
         req = await hitl.reject(request_id, resolved_by=body.resolved_by)
         return ApprovalRequestResponse.from_request(req)

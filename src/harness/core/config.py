@@ -5,7 +5,12 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Placeholder secret shipped in defaults — must never be used to sign/verify
+# JWTs in production.
+DEFAULT_JWT_SECRET = "change-me-in-production"
 
 
 class Settings(BaseSettings):
@@ -169,7 +174,7 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Auth
     # -------------------------------------------------------------------------
-    jwt_secret_key: str = "change-me-in-production"
+    jwt_secret_key: str = DEFAULT_JWT_SECRET
 
     # -------------------------------------------------------------------------
     # Budgets & Rate Limits
@@ -183,6 +188,20 @@ class Settings(BaseSettings):
     environment: Literal["dev", "staging", "prod"] = "dev"
     log_level: str = "INFO"
     worker_concurrency: int = 4
+
+    @model_validator(mode="after")
+    def _reject_default_jwt_secret_in_prod(self) -> "Settings":
+        """Refuse to start in prod with the placeholder JWT secret.
+
+        With the default secret anyone can forge a valid tenant token, so the
+        process must not come up at all. Dev/staging behaviour is unchanged.
+        """
+        if self.environment == "prod" and self.jwt_secret_key == DEFAULT_JWT_SECRET:
+            raise ValueError(
+                "JWT_SECRET_KEY is still the default placeholder while "
+                "ENVIRONMENT=prod. Set a strong JWT_SECRET_KEY before starting."
+            )
+        return self
 
 
 @lru_cache

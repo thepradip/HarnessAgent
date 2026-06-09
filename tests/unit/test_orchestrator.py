@@ -422,3 +422,66 @@ async def test_scheduler_respects_dependency_order():
     results = await scheduler.execute_plan(plan, tenant_id="t1", timeout=30.0)
     assert "t1" in results
     assert "t2" in results
+
+
+@pytest.mark.asyncio
+async def test_scheduler_blackboard_metadata_is_json_serialisable():
+    # Regression: the scheduler used to stuff the AgentBlackboard OBJECT into
+    # run metadata, which blew up RunRecord.to_json() (plain json.dumps) and
+    # failed every subtask whenever the scheduler had a redis client.
+    import json
+
+    from harness.orchestrator.scheduler import Scheduler
+
+    redis = fakeredis.FakeRedis(decode_responses=True)
+    runner = _make_mock_runner()
+    plan = TaskPlan(
+        plan_id="p_bb", original_task="bb",
+        subtasks=[SubTask(id="t1", agent_type="sql", task="query")],
+    )
+    scheduler = Scheduler(agent_runner=runner, redis=redis)
+    results = await scheduler.execute_plan(plan, tenant_id="t1", timeout=30.0)
+    assert "t1" in results
+
+    metadata = runner.create_run.call_args.kwargs["metadata"]
+    json.dumps(metadata)  # must not raise
+    assert "blackboard" not in metadata
+    assert metadata["blackboard_plan_id"] == "p_bb"
+
+
+# ===========================================================================
+# AgentRunner — concurrent cancel during execute_run
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_execute_run_preserves_concurrent_cancel(tmp_path):
+    # Regression: execute_run used to unconditionally persist its local record
+    # at the end, clobbering a concurrent cancel_run()'s "cancelled" status.
+    from harness.core.context import AgentResult
+    from harness.orchestrator.runner import AgentRunner
+
+    redis = fakeredis.FakeRedis(decode_responses=True)
+    holder: dict = {}
+
+    class _Agent:
+        async def run(self, ctx):
+            # Simulate an operator cancelling the run while the agent works
+            await holder["runner"].cancel_run(ctx.run_id)
+            return AgentResult(
+                run_id=ctx.run_id, output="done", steps=1, tokens=10, success=True
+            )
+
+    runner = AgentRunner(
+        redis=redis,
+        agent_factory=lambda agent_type: _Agent(),
+        workspace_base=str(tmp_path),
+    )
+    holder["runner"] = runner
+
+    record = await runner.create_run(tenant_id="t1", agent_type="base", task="x")
+    result = await runner.execute_run(record.run_id)
+
+    assert result.status == "cancelled"
+    persisted = await runner.get_run(record.run_id)
+    assert persisted is not None
+    assert persisted.status == "cancelled"

@@ -160,3 +160,76 @@ def test_rlvr_worker_module_imports():
     assert callable(run_event_driven)
     assert callable(run_poll_mode)
     assert callable(main)
+
+
+# ===========================================================================
+# Agent worker — _build_agent / build_agent_factory wiring
+# ===========================================================================
+
+def test_build_agent_is_module_level():
+    # Regression: _build_agent used to live inside process_run_job_async,
+    # so build_agent_factory()'s closure raised NameError when invoked.
+    from harness.workers import agent_worker
+    assert callable(getattr(agent_worker, "_build_agent", None))
+
+
+def test_build_agent_factory_passes_redis_client(monkeypatch):
+    from harness.workers import agent_worker
+
+    sentinel_redis = object()
+    monkeypatch.setattr("redis.asyncio.from_url", lambda *a, **kw: sentinel_redis)
+
+    calls = {}
+
+    def fake_build_agent(agent_type, cfg, config_dict=None, redis_client=None):
+        calls["agent_type"] = agent_type
+        calls["cfg"] = cfg
+        calls["redis_client"] = redis_client
+        return "agent_instance"
+
+    monkeypatch.setattr(agent_worker, "_build_agent", fake_build_agent)
+
+    cfg = MagicMock(redis_url="redis://localhost:6379/0")
+    factory = agent_worker.build_agent_factory(cfg)
+    assert factory("code") == "agent_instance"
+    assert calls["agent_type"] == "code"
+    assert calls["cfg"] is cfg
+    assert calls["redis_client"] is sentinel_redis
+
+
+@pytest.mark.asyncio
+async def test_worker_agent_factory_passes_live_redis(monkeypatch):
+    # Regression: the worker's agent_factory closure called _build_agent
+    # without the connected redis client, so event streaming and cost
+    # tracking silently got redis_client=None.
+    from harness.workers import agent_worker
+
+    fake_redis = fakeredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr("redis.asyncio.from_url", lambda *a, **kw: fake_redis)
+
+    built = {}
+
+    def fake_build_agent(agent_type, cfg, config_dict=None, redis_client=None):
+        built["agent_type"] = agent_type
+        built["redis_client"] = redis_client
+        return MagicMock()
+
+    monkeypatch.setattr(agent_worker, "_build_agent", fake_build_agent)
+
+    captured = {}
+
+    class _FakeRunner:
+        def __init__(self, *, agent_factory, **kwargs):
+            captured["agent_factory"] = agent_factory
+
+        async def execute_run(self, run_id):
+            return MagicMock(status="completed")
+
+    monkeypatch.setattr("harness.orchestrator.runner.AgentRunner", _FakeRunner)
+
+    await agent_worker.process_run_job_async("run_factory_test", {})
+
+    factory = captured["agent_factory"]
+    factory("sql")
+    assert built["agent_type"] == "sql"
+    assert built["redis_client"] is fake_redis

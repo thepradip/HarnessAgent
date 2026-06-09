@@ -346,7 +346,11 @@ class Scheduler:
         metadata["depends_on"] = subtask.depends_on
         metadata["handoff_count"] = len(subtask.depends_on)
         if blackboard is not None:
-            metadata["blackboard"] = blackboard
+            # Persist only the plan id — the AgentBlackboard object itself is
+            # not JSON-serialisable and would break RunRecord.to_json().
+            # Consumers can rebuild the blackboard via
+            # AgentBlackboard(redis, plan_id=metadata["blackboard_plan_id"]).
+            metadata["blackboard_plan_id"] = blackboard._plan_id
 
         # Include predecessor result summaries
         for dep_id in subtask.depends_on:

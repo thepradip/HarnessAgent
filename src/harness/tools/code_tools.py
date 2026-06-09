@@ -11,11 +11,26 @@ from typing import Any
 
 from harness.core.context import AgentContext, ToolResult
 from harness.core.errors import FailureClass, ToolError
+from harness.tools.file_tools import _resolve_safe
 
 logger = logging.getLogger(__name__)
 
 _OOM_EXIT_CODE = 137
 _OOM_ERROR = "OOM: container exceeded memory limit"
+
+# Env var gating the unsandboxed subprocess fallback in RunCodeTool
+_ALLOW_UNSANDBOXED_ENV = "HARNESS_ALLOW_UNSANDBOXED"
+_NO_SANDBOX_ERROR = (
+    "Code execution refused: no sandbox is available (Docker session, Docker "
+    "sandbox, and restricted executor all unavailable or failed) and "
+    "unsandboxed host execution is disabled. Set "
+    f"{_ALLOW_UNSANDBOXED_ENV}=1 or pass allow_unsandboxed=True to RunCodeTool "
+    "to explicitly opt in to running code directly on the host."
+)
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _is_oom(result: dict[str, Any]) -> bool:
@@ -56,10 +71,19 @@ class RunCodeTool:
         docker_sandbox: Any | None = None,
         restricted_executor: Any | None = None,
         workspace_manager: Any | None = None,
+        allow_unsandboxed: bool | None = None,
     ) -> None:
         self._docker_sandbox = docker_sandbox
         self._restricted_executor = restricted_executor
         self._workspace_manager = workspace_manager
+        # None → defer to the HARNESS_ALLOW_UNSANDBOXED env var at call time
+        self._allow_unsandboxed = allow_unsandboxed
+
+    def _unsandboxed_allowed(self) -> bool:
+        """True only when unsandboxed host execution was explicitly opted in."""
+        if self._allow_unsandboxed is not None:
+            return self._allow_unsandboxed
+        return _env_truthy(_ALLOW_UNSANDBOXED_ENV)
 
     async def execute(self, ctx: AgentContext, args: dict[str, Any]) -> ToolResult:
         """Run the provided Python code and return the output."""
@@ -114,7 +138,16 @@ class RunCodeTool:
                     data=None, error=f"Code execution failed: {exc}"
                 )
 
-        # Fallback: subprocess-based execution in temp dir
+        # Fallback: subprocess-based execution in temp dir.
+        # This runs LLM-generated code directly on the host, so it is
+        # disabled unless explicitly opted in (constructor flag or env var).
+        if not self._unsandboxed_allowed():
+            logger.error(
+                "run_python: no sandbox available and unsandboxed fallback "
+                "is disabled; refusing to execute code on the host."
+            )
+            return ToolResult(data=None, error=_NO_SANDBOX_ERROR)
+
         try:
             result_data = await self._run_subprocess(ctx, code, timeout)
             if _is_oom(result_data):
@@ -358,8 +391,8 @@ class ApplyPatchTool:
 
         # Resolve the target path within workspace (prevent path traversal)
         workspace = ctx.workspace_path
-        target_path = (workspace / rel_path).resolve()
-        if not str(target_path).startswith(str(workspace.resolve())):
+        target_path = _resolve_safe(workspace, rel_path)
+        if target_path is None:
             return ToolResult(
                 data=None,
                 error=f"Path '{rel_path}' escapes workspace boundary.",

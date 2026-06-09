@@ -286,7 +286,8 @@ async def test_run_code_tool_subprocess_oom_returns_error(tmp_path):
     from harness.tools.code_tools import RunCodeTool
     from harness.core.context import ToolResult
 
-    tool = RunCodeTool()  # no docker_sandbox, no restricted_executor → subprocess path
+    # no docker_sandbox, no restricted_executor → subprocess path (explicit opt-in)
+    tool = RunCodeTool(allow_unsandboxed=True)
     ctx = MagicMock()
     ctx.run_id = "test-run"
     ctx.step_count = 1
@@ -307,7 +308,7 @@ async def test_run_code_tool_subprocess_oom_returns_error(tmp_path):
 async def test_run_code_tool_subprocess_normal_failure_not_oom(tmp_path):
     from harness.tools.code_tools import RunCodeTool
 
-    tool = RunCodeTool()
+    tool = RunCodeTool(allow_unsandboxed=True)
     ctx = MagicMock()
     ctx.run_id = "test-run"
     ctx.step_count = 1

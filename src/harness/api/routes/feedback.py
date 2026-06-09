@@ -16,6 +16,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def _require_owned_run(run_id: str, tenant_id: str, redis: Any) -> None:
+    """Load the RunRecord and enforce tenant ownership (mirrors runs.py).
+
+    Raises:
+        HTTPException 404 if the run does not exist.
+        HTTPException 403 if the run belongs to another tenant.
+    """
+    from harness.orchestrator.runner import AgentRunner
+
+    runner = AgentRunner(redis=redis, agent_factory=lambda agent_type: None)
+    record = await runner.get_run(run_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Run not found: {run_id}",
+        )
+    if record.tenant_id != tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
@@ -81,6 +104,7 @@ async def post_feedback(
     tenant_id: str = Depends(get_current_tenant),
     redis: Any = Depends(get_redis),
 ) -> FeedbackResponse:
+    await _require_owned_run(run_id, tenant_id, redis)
     channel = FeedbackChannel(redis)
     event = FeedbackEvent(
         run_id=run_id,
@@ -113,6 +137,7 @@ async def list_feedback(
     tenant_id: str = Depends(get_current_tenant),
     redis: Any = Depends(get_redis),
 ) -> list[FeedbackResponse]:
+    await _require_owned_run(run_id, tenant_id, redis)
     channel = FeedbackChannel(redis)
     events = await channel.history(run_id, count=100)
     return [FeedbackResponse.from_event(ev) for ev in events]
@@ -130,6 +155,7 @@ async def clear_feedback(
     tenant_id: str = Depends(get_current_tenant),
     redis: Any = Depends(get_redis),
 ) -> Response:
+    await _require_owned_run(run_id, tenant_id, redis)
     channel = FeedbackChannel(redis)
     await channel.clear(run_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -21,8 +21,45 @@ _WRITE_STMT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Write/DDL keywords that must not appear *anywhere* in a read-only statement
+# (catches e.g. ``WITH t AS (SELECT 1) DELETE FROM users`` which bypasses the
+# first-keyword prefix check above). Checked after stripping string literals
+# and comments so legitimate SELECTs containing these words as data pass.
+_WRITE_WORD_RE = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|MERGE"
+    r"|REPLACE|EXEC|EXECUTE|CALL|ATTACH|PRAGMA|VACUUM)\b",
+    re.IGNORECASE,
+)
+
+# String literals ('' / "" with doubled-quote escapes) and SQL comments
+_SQL_STRING_OR_COMMENT_RE = re.compile(
+    r"'(?:[^']|'')*'"        # single-quoted string literal
+    r"|\"(?:[^\"]|\"\")*\""  # double-quoted identifier/string
+    r"|--[^\n]*"             # line comment
+    r"|/\*.*?\*/",           # block comment
+    re.DOTALL,
+)
+
+# Valid SQL identifier (used for table_name and schema arguments)
+_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
 # Regex to detect absence of LIMIT clause
 _LIMIT_RE = re.compile(r"\bLIMIT\s+\d+", re.IGNORECASE)
+
+
+def _strip_strings_and_comments(sql: str) -> str:
+    """Replace string literals and comments with spaces for keyword scanning."""
+    return _SQL_STRING_OR_COMMENT_RE.sub(" ", sql)
+
+
+def _find_write_keyword(sql: str) -> str | None:
+    """Return the first write/DDL keyword found anywhere in the SQL, or None.
+
+    String literals and comments are stripped first so a SELECT containing
+    e.g. ``WHERE note = 'please DELETE me'`` is not rejected.
+    """
+    match = _WRITE_WORD_RE.search(_strip_strings_and_comments(sql))
+    return match.group(1).upper() if match else None
 
 
 @dataclass
@@ -77,6 +114,14 @@ class _SharedPool:
 
         engine = await self.get_engine()
         async with engine.connect() as conn:
+            # Engine-level read-only enforcement where the dialect supports it:
+            # for Postgres, make the implicit transaction READ ONLY so any
+            # write that slips past the keyword checks is rejected by the DB.
+            if self._config.read_only and _is_postgres(self._config.connection_string):
+                try:
+                    await conn.execute(sqlalchemy.text("SET TRANSACTION READ ONLY"))
+                except Exception as exc:
+                    logger.debug("SET TRANSACTION READ ONLY failed: %s", exc)
             result = await conn.execute(
                 sqlalchemy.text(sql), params or {}
             )
@@ -142,12 +187,22 @@ class ExecuteQueryTool:
         limit: int = min(int(args.get("limit", 100)), self._config.max_rows)
 
         # Reject non-SELECT in read-only mode
-        if self._config.read_only and _WRITE_STMT_RE.match(sql):
-            error = (
-                "Only SELECT queries are permitted in read-only mode. "
-                f"Received: {sql[:80]!r}"
-            )
-            return ToolResult(data=None, error=error)
+        if self._config.read_only:
+            if _WRITE_STMT_RE.match(sql):
+                error = (
+                    "Only SELECT queries are permitted in read-only mode. "
+                    f"Received: {sql[:80]!r}"
+                )
+                return ToolResult(data=None, error=error)
+            # Catch write keywords buried anywhere in the statement
+            # (e.g. WITH t AS (SELECT 1) DELETE FROM users)
+            write_kw = _find_write_keyword(sql)
+            if write_kw is not None:
+                error = (
+                    f"Write keyword '{write_kw}' is not permitted in read-only mode. "
+                    f"Received: {sql[:80]!r}"
+                )
+                return ToolResult(data=None, error=error)
 
         # Add LIMIT if missing on SELECT
         if sql.upper().lstrip().startswith("SELECT") and not _LIMIT_RE.search(sql):
@@ -247,6 +302,10 @@ class ListTablesTool:
         """Query information_schema to list all tables."""
         schema = args.get("schema", "public")
 
+        # Sanitize schema to prevent injection
+        if not _IDENTIFIER_RE.match(schema):
+            return ToolResult(data=None, error=f"Invalid schema name: {schema!r}")
+
         if _is_sqlite(self._config.connection_string):
             sql = (
                 "SELECT name AS table_name, 'table' AS table_type "
@@ -305,12 +364,14 @@ class DescribeTableTool:
         table_name = args["table_name"].strip()
         schema = args.get("schema", "public")
 
-        # Sanitize table_name to prevent injection
-        if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", table_name):
+        # Sanitize table_name and schema to prevent injection
+        if not _IDENTIFIER_RE.match(table_name):
             return ToolResult(
                 data=None,
                 error=f"Invalid table name: {table_name!r}",
             )
+        if not _IDENTIFIER_RE.match(schema):
+            return ToolResult(data=None, error=f"Invalid schema name: {schema!r}")
 
         try:
             if _is_sqlite(self._config.connection_string):
@@ -431,8 +492,10 @@ class SampleRowsTool:
         n = min(int(args.get("n", 5)), 20)
         schema = args.get("schema", "public")
 
-        if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", table_name):
+        if not _IDENTIFIER_RE.match(table_name):
             return ToolResult(data=None, error=f"Invalid table name: {table_name!r}")
+        if not _IDENTIFIER_RE.match(schema):
+            return ToolResult(data=None, error=f"Invalid schema name: {schema!r}")
 
         try:
             if _is_sqlite(self._config.connection_string):

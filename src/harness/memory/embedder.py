@@ -106,11 +106,18 @@ class SentenceTransformerEmbedder:
         if uncached_texts:
             loop = asyncio.get_running_loop()
             # Run CPU-bound encoding in thread pool to avoid blocking the event loop
+            # (convert_to_numpy=True: encode() returns a 2D ndarray; with False
+            # it returns a plain list of tensors, which has no .tolist()).
             raw_embeddings: list[list[float]] = await loop.run_in_executor(
                 None,
-                lambda: self._model.encode(
-                    uncached_texts, convert_to_numpy=False, show_progress_bar=False
-                ).tolist(),
+                lambda: [
+                    row.tolist()
+                    for row in self._model.encode(
+                        uncached_texts,
+                        convert_to_numpy=True,
+                        show_progress_bar=False,
+                    )
+                ],
             )
             for idx, text, embedding in zip(
                 uncached_indices, uncached_texts, raw_embeddings

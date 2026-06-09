@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -89,6 +90,15 @@ def _cap_tool_result(result: ToolResult) -> ToolResult:
             metadata={**result.metadata, "truncated": True},
         )
     return result
+
+
+def _orphan_safe_split(history: list[dict[str, Any]], split: int) -> int:
+    """Move a history split point back so the kept window never starts on a
+    tool result — its tool_use lives in the preceding assistant message, and
+    an orphaned tool result is rejected by both Anthropic and OpenAI."""
+    while split > 0 and history[split].get("role") == "tool":
+        split -= 1
+    return max(split, 0)
 
 
 def _append_run_log(run_id: str, entry: dict) -> None:
@@ -325,8 +335,19 @@ class BaseAgent:
                         except Exception:
                             pass
 
-                    # Add assistant message to history
-                    history.append({"role": "assistant", "content": safe_content})
+                    # Add assistant message to history — carry the tool calls so
+                    # providers can rebuild the tool_use/tool_result pairing their
+                    # APIs require on the next turn.
+                    assistant_entry: dict[str, Any] = {
+                        "role": "assistant",
+                        "content": safe_content,
+                    }
+                    if response.tool_calls:
+                        assistant_entry["tool_calls"] = [
+                            {"id": c.id, "name": c.name, "args": c.args}
+                            for c in response.tool_calls
+                        ]
+                    history.append(assistant_entry)
 
                     # 3k. Push assistant response to short-term memory
                     if ctx.memory is not None:
@@ -765,10 +786,12 @@ class BaseAgent:
                 )
 
             # redirect — update remaining task in context metadata
+            # Injected as a user turn: providers reject (Anthropic) or drop
+            # (OpenAI reasoning) system-role messages mid-conversation.
             if event.type == "redirect" and event.content:
                 ctx.metadata["redirected_task"] = event.content
                 history.append({
-                    "role": "system",
+                    "role": "user",
                     "content": event.to_context_message(),
                 })
                 applied_ids.append(event.feedback_id)
@@ -779,7 +802,7 @@ class BaseAgent:
             from harness.feedback.channel import should_inject
             if should_inject(event):
                 history.append({
-                    "role": "system",
+                    "role": "user",
                     "content": event.to_context_message(),
                 })
                 applied_ids.append(event.feedback_id)
@@ -1269,8 +1292,9 @@ class BaseAgent:
         if len(history) <= _MAX_HISTORY_MESSAGES:
             return history
 
-        recent = history[-_RECENT_MESSAGES_KEEP:]
-        older = history[:-_RECENT_MESSAGES_KEEP]
+        split = _orphan_safe_split(history, len(history) - _RECENT_MESSAGES_KEEP)
+        recent = history[split:]
+        older = history[:split]
 
         # Try memory manager's fit_history first (most efficient path)
         if ctx.memory is not None and hasattr(ctx.memory, "fit_history"):
@@ -1345,7 +1369,7 @@ class BaseAgent:
             len(history),
             _MAX_HISTORY_MESSAGES,
         )
-        return history[-_MAX_HISTORY_MESSAGES:]
+        return history[_orphan_safe_split(history, len(history) - _MAX_HISTORY_MESSAGES):]
 
     # ------------------------------------------------------------------
     # Checkpointing
@@ -1467,35 +1491,60 @@ class BaseAgent:
 
     @asynccontextmanager
     async def _mlflow_context(self, ctx: AgentContext):  # type: ignore[return]
-        """Start an MLflow agent run if tracer is available."""
-        mlflow_run_id = None
+        """Start an MLflow agent run if tracer is available.
+
+        Only the tracer-CM acquisition/release is guarded: an exception raised
+        in the body must propagate unchanged, never be caught here (a caught
+        body exception would make this generator yield twice and replace the
+        real error with a RuntimeError).
+        """
+        run_cm = None
+        run = None
         if self._mlflow_tracer is not None:
             try:
-                async with self._mlflow_tracer.agent_run(ctx) as run:
-                    yield getattr(run, "info", {}).get("run_id") if run else None
-                    return
+                run_cm = self._mlflow_tracer.agent_run(ctx)
+                run = await run_cm.__aenter__()
             except Exception as exc:
                 logger.debug("MLflow agent_run context failed: %s", exc)
-        yield mlflow_run_id
+                run_cm = None
+        try:
+            info = getattr(run, "info", None) if run is not None else None
+            yield info.get("run_id") if isinstance(info, dict) else None
+        finally:
+            if run_cm is not None:
+                try:
+                    await run_cm.__aexit__(*sys.exc_info())
+                except Exception as exc:
+                    logger.debug("MLflow agent_run exit failed: %s", exc)
 
     @asynccontextmanager
     async def _llm_span(self, ctx: AgentContext):  # type: ignore[return]
-        """Open an OTel span + TraceRecorder LLM span for the LLM call."""
+        """Open an OTel span + TraceRecorder LLM span for the LLM call.
+
+        Tracer failures are swallowed; failures from the body (the LLM call
+        itself) must propagate unchanged — see _mlflow_context.
+        """
         # TraceRecorder span (durable)
         llm_span_id = await self._start_trace_span(
             ctx, SpanKind.LLM, "llm:call",
         )
+        # OTel span (live export)
+        otel_cm = None
+        if self._step_tracer is not None:
+            try:
+                otel_cm = self._step_tracer.span("llm_call", ctx)
+                otel_cm.__enter__()
+            except Exception as exc:
+                logger.debug("StepTracer.span failed: %s", exc)
+                otel_cm = None
         try:
-            # OTel span (live export)
-            if self._step_tracer is not None:
-                try:
-                    with self._step_tracer.span("llm_call", ctx):
-                        yield llm_span_id
-                        return
-                except Exception as exc:
-                    logger.debug("StepTracer.span failed: %s", exc)
             yield llm_span_id
         finally:
+            if otel_cm is not None:
+                try:
+                    otel_cm.__exit__(*sys.exc_info())
+                except Exception as exc:
+                    logger.debug("StepTracer.span exit failed: %s", exc)
             await self._end_trace_span(ctx, llm_span_id)
 
     # ------------------------------------------------------------------

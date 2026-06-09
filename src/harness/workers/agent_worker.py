@@ -52,83 +52,13 @@ async def process_run_job_async(run_id: str, config_dict: dict | None = None) ->
         logger.error("Worker: Redis connection failed: %s", exc)
         raise
 
-    def _build_agent(agent_type: str, redis_client: Any = None) -> Any:
-        """Create a production BaseAgent subclass with shared harness services."""
-        from harness.core.cost_tracker import CostTracker
-        from harness.llm.factory import build_router
-        from harness.observability.trace_recorder import TraceRecorder
-        from harness.safety.pipeline_factory import build_pipeline, get_default_config
-        from harness.tools.code_tools import ApplyPatchTool, LintCodeTool, RunCodeTool
-        from harness.tools.file_tools import ListWorkspaceTool, ReadFileTool, WriteFileTool
-        from harness.tools.registry import ToolRegistry
-
-        safety = build_pipeline(agent_type, get_default_config(agent_type))
-        registry = ToolRegistry(safety_pipeline=safety)
-        for tool in [
-            ReadFileTool(),
-            WriteFileTool(),
-            ListWorkspaceTool(),
-            RunCodeTool(),
-            LintCodeTool(),
-            ApplyPatchTool(),
-        ]:
-            registry.register(tool)
-
-        sql_connection = (
-            config_dict.get("sql_connection_string")
-            or getattr(cfg, "sql_connection_string", "")
-        )
-        if sql_connection:
-            from harness.tools.sql_tools import SQLConnectionConfig, build_sql_tools
-
-            for tool in build_sql_tools(SQLConnectionConfig(connection_string=sql_connection)):
-                registry.register(tool)
-
-        common_kwargs = {
-            "llm_router": build_router(cfg),
-            "memory_manager": _NoopMemory(),
-            "tool_registry": registry,
-            "safety_pipeline": safety,
-            "step_tracer": None,
-            "mlflow_tracer": None,
-            "failure_tracker": None,
-            "audit_logger": None,
-            "event_bus": _RedisStreamEventSink(redis_client),
-            "cost_tracker": CostTracker(
-                redis_client=redis_client,
-                budget_usd_per_tenant=cfg.cost_budget_usd_per_tenant,
-            ),
-            "checkpoint_manager": _NoopCheckpointManager(),
-            "message_bus": None,
-            "trace_recorder": TraceRecorder.create(
-                redis_url=config_dict.get("redis_url", cfg.redis_url),
-            ),
-        }
-
-        if agent_type == "sql":
-            from harness.agents.sql_agent import SQLAgent
-
-            return SQLAgent(**common_kwargs)
-        if agent_type == "code":
-            from harness.agents.code_agent import CodeAgent
-
-            return CodeAgent(**common_kwargs)
-        # Plugin registry — third-party agents registered at startup
-        if agent_type in _AGENT_REGISTRY:
-            cls = _AGENT_REGISTRY[agent_type]
-            return cls(**common_kwargs)
-
-        raise ValueError(
-            f"Unknown agent_type {agent_type!r}. "
-            f"Supported: 'sql', 'code', or register a custom agent with "
-            f"harness.workers.agent_worker.register_agent('{agent_type}', MyAgent)."
-        )
-
-    # Build an agent factory
+    # Build an agent factory bound to this worker's live Redis connection
     def agent_factory(agent_type: str) -> Any:
         """Create the appropriate agent for the given type."""
         try:
-            return _build_agent(agent_type)
+            return _build_agent(
+                agent_type, cfg, config_dict=config_dict, redis_client=redis_client
+            )
         except ImportError as exc:
             logger.warning("Agent module not found for %s: %s", agent_type, exc)
             raise RuntimeError(f"Agent '{agent_type}' is not available: {exc}") from exc
@@ -276,6 +206,95 @@ def register_agent(agent_type: str, agent_class: type) -> None:
     logger.info("Registered custom agent: %s → %s", agent_type, agent_class.__name__)
 
 
+def _build_agent(
+    agent_type: str,
+    cfg: Any,
+    config_dict: dict | None = None,
+    redis_client: Any = None,
+) -> Any:
+    """Create a production BaseAgent subclass with shared harness services.
+
+    Args:
+        agent_type:   Which agent to build ('sql', 'code', or a registered type).
+        cfg:          Harness config (from get_config()).
+        config_dict:  Optional per-run configuration overrides.
+        redis_client: Async Redis client used for event streaming and cost
+                      tracking.  Pass the live connection so events and
+                      budgets are actually persisted.
+    """
+    from harness.core.cost_tracker import CostTracker
+    from harness.llm.factory import build_router
+    from harness.observability.trace_recorder import TraceRecorder
+    from harness.safety.pipeline_factory import build_pipeline, get_default_config
+    from harness.tools.code_tools import ApplyPatchTool, LintCodeTool, RunCodeTool
+    from harness.tools.file_tools import ListWorkspaceTool, ReadFileTool, WriteFileTool
+    from harness.tools.registry import ToolRegistry
+
+    config_dict = config_dict or {}
+
+    safety = build_pipeline(agent_type, get_default_config(agent_type))
+    registry = ToolRegistry(safety_pipeline=safety)
+    for tool in [
+        ReadFileTool(),
+        WriteFileTool(),
+        ListWorkspaceTool(),
+        RunCodeTool(),
+        LintCodeTool(),
+        ApplyPatchTool(),
+    ]:
+        registry.register(tool)
+
+    sql_connection = (
+        config_dict.get("sql_connection_string")
+        or getattr(cfg, "sql_connection_string", "")
+    )
+    if sql_connection:
+        from harness.tools.sql_tools import SQLConnectionConfig, build_sql_tools
+
+        for tool in build_sql_tools(SQLConnectionConfig(connection_string=sql_connection)):
+            registry.register(tool)
+
+    common_kwargs = {
+        "llm_router": build_router(cfg),
+        "memory_manager": _NoopMemory(),
+        "tool_registry": registry,
+        "safety_pipeline": safety,
+        "step_tracer": None,
+        "mlflow_tracer": None,
+        "failure_tracker": None,
+        "audit_logger": None,
+        "event_bus": _RedisStreamEventSink(redis_client),
+        "cost_tracker": CostTracker(
+            redis_client=redis_client,
+            budget_usd_per_tenant=cfg.cost_budget_usd_per_tenant,
+        ),
+        "checkpoint_manager": _NoopCheckpointManager(),
+        "message_bus": None,
+        "trace_recorder": TraceRecorder.create(
+            redis_url=config_dict.get("redis_url", cfg.redis_url),
+        ),
+    }
+
+    if agent_type == "sql":
+        from harness.agents.sql_agent import SQLAgent
+
+        return SQLAgent(**common_kwargs)
+    if agent_type == "code":
+        from harness.agents.code_agent import CodeAgent
+
+        return CodeAgent(**common_kwargs)
+    # Plugin registry — third-party agents registered at startup
+    if agent_type in _AGENT_REGISTRY:
+        cls = _AGENT_REGISTRY[agent_type]
+        return cls(**common_kwargs)
+
+    raise ValueError(
+        f"Unknown agent_type {agent_type!r}. "
+        f"Supported: 'sql', 'code', or register a custom agent with "
+        f"harness.workers.agent_worker.register_agent('{agent_type}', MyAgent)."
+    )
+
+
 def build_agent_factory(cfg: Any) -> Any:
     """Return a callable agent factory using the default harness config.
 
@@ -298,7 +317,7 @@ def build_agent_factory(cfg: Any) -> Any:
     )
 
     def _factory(agent_type: str) -> Any:
-        return _build_agent(agent_type, redis_client=_redis)
+        return _build_agent(agent_type, cfg, redis_client=_redis)
 
     return _factory
 

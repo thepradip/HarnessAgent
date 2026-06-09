@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Any, AsyncIterator
 
 from harness.core.errors import InterAgentTimeout
@@ -97,6 +96,10 @@ class MessagePatterns:
         pending: set[str] = set(recipient_ids)
         replies: list[AgentMessage] = []
 
+        # Snapshot the reply-stream position BEFORE sending so replies that
+        # arrive before the subscriber's first XREAD are not lost.
+        start_ids = await self._bus.snapshot_stream_ids(sender_id)
+
         # Send to all in parallel
         send_tasks = [
             self._bus.send(
@@ -112,30 +115,33 @@ class MessagePatterns:
         ]
         await asyncio.gather(*send_tasks, return_exceptions=True)
 
-        deadline = time.monotonic() + timeout
-
-        async for reply in self._bus.subscribe(
-            sender_id, message_types=["result", "error"]
-        ):
-            if (
-                reply.correlation_id == correlation_id
-                and reply.sender_id in pending
+        async def _collect() -> None:
+            async for reply in self._bus.subscribe(
+                sender_id, message_types=["result", "error"], last_ids=start_ids
             ):
-                replies.append(reply)
-                pending.discard(reply.sender_id)
+                if (
+                    reply.correlation_id == correlation_id
+                    and reply.sender_id in pending
+                ):
+                    replies.append(reply)
+                    pending.discard(reply.sender_id)
 
-                if len(replies) >= min_responses:
-                    break
-                if not pending:
-                    break
+                    if len(replies) >= min_responses:
+                        return
+                    if not pending:
+                        return
 
-            if time.monotonic() > deadline:
-                logger.warning(
-                    "scatter_gather timeout: got %d/%d responses",
-                    len(replies),
-                    len(recipient_ids),
-                )
-                break
+        try:
+            await asyncio.wait_for(_collect(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass  # partial results are acceptable
+
+        if len(replies) < min_responses:
+            logger.warning(
+                "scatter_gather timeout: got %d/%d responses",
+                len(replies),
+                len(recipient_ids),
+            )
 
         return replies
 
@@ -186,6 +192,7 @@ class MessagePatterns:
                 recipient_id=agent_id,
                 payload={"type": "ping"},
                 timeout=timeout,
+                message_types=["result", "error", "status", "heartbeat"],
             )
             return reply.message_type in ("result", "status", "heartbeat")
         except InterAgentTimeout:

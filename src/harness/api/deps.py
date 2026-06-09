@@ -10,7 +10,7 @@ from typing import Any, AsyncGenerator, Optional
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 
-from harness.core.config import get_config
+from harness.core.config import DEFAULT_JWT_SECRET, get_config
 
 logger = logging.getLogger(__name__)
 
@@ -132,18 +132,34 @@ def _decode_jwt(token: str) -> dict:
 
     Raises:
         HTTPException 401 on invalid or expired token.
+        ImportError if python-jose is not installed (server misconfiguration —
+            must surface as a 500, not a client-facing 401).
     """
-    try:
-        from jose import JWTError, jwt  # type: ignore
+    # Deliberately outside the try: a missing JWT library is a deployment
+    # problem, not bad client credentials.
+    from jose import JWTError, jwt  # type: ignore
 
-        cfg = get_config()
+    cfg = get_config()
+
+    # Defense in depth: never accept tokens signed with the placeholder
+    # secret in prod (the config validator should already have refused to
+    # start, but a stale cached Settings must not weaken auth).
+    if cfg.environment == "prod" and cfg.jwt_secret_key == DEFAULT_JWT_SECRET:
+        logger.error("Rejecting JWT auth: default jwt_secret_key in prod")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="JWT authentication is not configured",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
         payload = jwt.decode(
             token,
             cfg.jwt_secret_key,
             algorithms=["HS256"],
         )
         return payload
-    except Exception as exc:
+    except JWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid authentication credentials: {exc}",
