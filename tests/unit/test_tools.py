@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from harness.core.context import AgentContext, ToolCall, ToolResult
 from harness.core.errors import FailureClass, SafetyViolation, ToolError
 from harness.tools.registry import ToolRegistry
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -164,61 +162,64 @@ async def test_mcp_tool_wrapper_calls_mcp_session(tmp_path):
 
 @pytest.mark.asyncio
 async def test_sql_tool_rejects_write_in_read_only_mode(tmp_path):
-    """SQL tool in read-only mode should reject DML statements."""
-    try:
-        from harness.tools.skills import SQLExecutor  # type: ignore
-    except ImportError:
-        pytest.skip("SQLExecutor not implemented")
+    """ExecuteQueryTool in read-only mode rejects DML before touching the DB."""
+    from harness.tools.sql_tools import ExecuteQueryTool, SQLConnectionConfig
 
-    tool = SQLExecutor(connection_string="sqlite:///:memory:", read_only=True)
+    config = SQLConnectionConfig(
+        connection_string="sqlite+aiosqlite:///:memory:", read_only=True
+    )
+    pool = MagicMock()  # must never be queried — rejection happens first
+    pool.execute_query = AsyncMock()
+    tool = ExecuteQueryTool(pool=pool, config=config)
 
     ctx = _make_ctx(tmp_path)
-    result = await tool.execute(ctx, {"query": "DELETE FROM users"})
+    result = await tool.execute(ctx, {"sql": "DELETE FROM users"})
 
     assert result.is_error is True
-    assert "read" in result.error.lower() or "write" in result.error.lower()
+    assert "select" in result.error.lower() or "read-only" in result.error.lower()
+    pool.execute_query.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_sql_tool_adds_limit_if_missing(tmp_path):
-    """SQL tool should automatically add LIMIT to SELECT queries without one."""
-    try:
-        from harness.tools.skills import SQLExecutor  # type: ignore
-    except ImportError:
-        pytest.skip("SQLExecutor not implemented")
+    """ExecuteQueryTool auto-appends LIMIT to a SELECT that has none."""
+    from harness.core.context import AgentContext
+    from harness.tools.sql_tools import ExecuteQueryTool, SQLConnectionConfig
 
-    # In-memory SQLite DB
-    import sqlite3
-    conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
-    conn.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')")
-    conn.commit()
+    config = SQLConnectionConfig(
+        connection_string="sqlite+aiosqlite:///:memory:", read_only=True, max_rows=100
+    )
+    pool = MagicMock()
+    pool.execute_query = AsyncMock(return_value=[{"id": 1, "name": "Alice"}])
+    tool = ExecuteQueryTool(pool=pool, config=config)
 
-    tool = SQLExecutor(connection=conn, read_only=True, auto_limit=100)
+    # memory=None so the success path skips the optional GraphRAG recording branch
+    ctx = AgentContext(
+        run_id=uuid.uuid4().hex, tenant_id="test", agent_type="test",
+        task="test", memory=None, workspace_path=tmp_path / "ws",
+    )
+    result = await tool.execute(ctx, {"sql": "SELECT * FROM users"})
 
-    ctx = _make_ctx(tmp_path)
-    result = await tool.execute(ctx, {"query": "SELECT * FROM users"})
-
-    # Should succeed and not return error
-    assert not result.is_error or "limit" in str(result.data).lower()
+    assert not result.is_error
+    executed_sql = pool.execute_query.call_args.args[0]
+    assert "LIMIT" in executed_sql.upper()
 
 
 @pytest.mark.asyncio
 async def test_workspace_tool_rejects_path_traversal(tmp_path):
-    """Workspace tool should reject paths that attempt directory traversal."""
-    try:
-        from harness.tools.skills import WorkspaceReadTool  # type: ignore
-    except ImportError:
-        pytest.skip("WorkspaceReadTool not implemented")
+    """ReadFileTool rejects a path that escapes the workspace boundary."""
+    from harness.tools.file_tools import ReadFileTool
 
-    tool = WorkspaceReadTool(workspace_root=str(tmp_path / "ws"))
+    ws = tmp_path / "ws"
+    ws.mkdir(parents=True, exist_ok=True)
+    tool = ReadFileTool()  # workspace_manager=None -> resolves against ctx.workspace_path
 
     ctx = _make_ctx(tmp_path)
-    # Attempt path traversal
     result = await tool.execute(ctx, {"path": "../../etc/passwd"})
 
     assert result.is_error is True
-    assert "traversal" in result.error.lower() or "path" in result.error.lower() or "outside" in result.error.lower()
+    err = result.error.lower()
+    assert "escape" in err or "boundary" in err or "outside" in err
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +249,6 @@ async def test_registry_caps_large_tool_result(tmp_path):
 @pytest.mark.asyncio
 async def test_registry_does_not_cap_small_tool_result(tmp_path):
     """Tool outputs under the 8 k cap should pass through unchanged."""
-    from harness.tools.registry import _TOOL_RESULT_MAX_CHARS
 
     small_data = {"result": "short answer"}
     registry = ToolRegistry()

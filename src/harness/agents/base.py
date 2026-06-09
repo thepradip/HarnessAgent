@@ -1200,23 +1200,38 @@ class BaseAgent:
             return
 
         try:
-            from harness.filesystem.sandbox import SessionDockerSandbox, memory_for_workload
-            if not await SessionDockerSandbox.is_available():
-                logger.debug("Docker not available; skipping session sandbox")
-                return
-
             from harness.core.config import get_config
             cfg = get_config()
-            session = SessionDockerSandbox(
-                workspace_path=ctx.workspace_path,
-                memory_limit=memory_for_workload(cfg.sandbox_workload),
-                runtime=cfg.sandbox_runtime,
-            )
+            provider = ctx.metadata.get("sandbox_provider") or getattr(cfg, "sandbox_provider", "docker")
+
+            if provider == "e2b":
+                # E2B cloud sandbox — drop-in for SessionDockerSandbox.
+                from harness.filesystem.e2b_sandbox import E2BSandbox
+                if not await E2BSandbox.is_available():
+                    logger.debug("E2B unavailable (missing SDK or E2B_API_KEY); skipping session sandbox")
+                    return
+                session: Any = E2BSandbox(
+                    api_key=cfg.e2b_api_key or None,
+                    template=cfg.e2b_template or None,
+                    workspace_path=ctx.workspace_path,
+                )
+            else:
+                from harness.filesystem.sandbox import SessionDockerSandbox, memory_for_workload
+                if not await SessionDockerSandbox.is_available():
+                    logger.debug("Docker not available; skipping session sandbox")
+                    return
+                session = SessionDockerSandbox(
+                    workspace_path=ctx.workspace_path,
+                    memory_limit=memory_for_workload(cfg.sandbox_workload),
+                    runtime=cfg.sandbox_runtime,
+                )
+
             await session.__aenter__()
+            # Stored under "docker_session" for back-compat — RunCodeTool reads this key.
             ctx.metadata["docker_session"] = session
-            logger.info("Docker session started for run %s", ctx.run_id[:8])
+            logger.info("%s session started for run %s", provider, ctx.run_id[:8])
         except Exception as exc:
-            logger.warning("Failed to start Docker session: %s", exc)
+            logger.warning("Failed to start sandbox session: %s", exc)
 
     async def _stop_docker_session(self, ctx: AgentContext) -> None:
         """Stop the persistent sandbox container, if one is running."""

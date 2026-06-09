@@ -1,177 +1,81 @@
-"""Unit tests for inter-agent messaging."""
+"""Unit tests for the inter-agent message bus (AgentMessageBus, Redis Streams)."""
 
 from __future__ import annotations
 
-import asyncio
-import uuid
-from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+import json
 
 import pytest
 import pytest_asyncio
 
-
-@pytest_asyncio.fixture
-async def event_bus(redis_client):
-    """Create an EventBus backed by fakeredis."""
-    try:
-        from harness.orchestrator.event_bus import EventBus  # type: ignore
-        return EventBus(redis=redis_client)
-    except ImportError:
-        pytest.skip("EventBus not implemented")
+from harness.messaging.bus import (
+    _BROADCAST_STREAM,
+    _MSG_INDEX_KEY,
+    _STREAM_PREFIX,
+    AgentMessageBus,
+)
+from harness.messaging.schema import AgentMessage
 
 
 @pytest_asyncio.fixture
-async def message_bus(redis_client):
-    """Create a MessageBus backed by fakeredis."""
-    try:
-        from harness.orchestrator.messaging import MessageBus  # type: ignore
-        return MessageBus(redis=redis_client)
-    except ImportError:
-        try:
-            from harness.orchestrator.event_bus import EventBus  # type: ignore
-            return EventBus(redis=redis_client)
-        except ImportError:
-            pytest.skip("MessageBus/EventBus not implemented")
+async def bus(redis_client):
+    """AgentMessageBus wired to the fakeredis client (bypasses real connection)."""
+    b = AgentMessageBus(redis_url="redis://localhost:6379/0")
+    b._client = redis_client  # inject fakeredis; _get_client() returns it as-is
+    return b
+
+
+def _msg(**kw):
+    base = {"sender_id": "planner", "message_type": "task",
+            "payload": {"content": "List tables"}}
+    base.update(kw)
+    return AgentMessage(**base)
 
 
 @pytest.mark.asyncio
-async def test_send_message_to_specific_agent(redis_client):
-    """A message sent to a specific agent should be receivable by that agent only."""
-    try:
-        from harness.orchestrator.messaging import MessageBus  # type: ignore
-        bus = MessageBus(redis=redis_client)
-    except ImportError:
-        pytest.skip("MessageBus not implemented")
-
-    received = []
-
-    async def handler(msg):
-        received.append(msg)
-
-    await bus.subscribe("agent-sql", handler)
-    await bus.send("agent-sql", {"type": "task", "content": "List tables"})
-    await asyncio.sleep(0.1)
-
-    assert len(received) >= 1
-    assert any("List tables" in str(m) for m in received)
+async def test_send_routes_to_recipient_stream(bus, redis_client):
+    entry_id = await bus.send(_msg(recipient_id="agent-sql"))
+    assert entry_id  # Redis returns a non-empty stream entry id
+    assert await redis_client.xlen(f"{_STREAM_PREFIX}agent-sql") == 1
+    # Nothing leaked onto the broadcast stream
+    assert await redis_client.xlen(_BROADCAST_STREAM) == 0
 
 
 @pytest.mark.asyncio
-async def test_broadcast_received_by_all(redis_client):
-    """A broadcast message should be received by all subscribed agents."""
-    try:
-        from harness.orchestrator.messaging import MessageBus  # type: ignore
-        bus = MessageBus(redis=redis_client)
-    except ImportError:
-        pytest.skip("MessageBus not implemented")
-
-    received_a = []
-    received_b = []
-
-    await bus.subscribe("agent-a", lambda m: received_a.append(m))
-    await bus.subscribe("agent-b", lambda m: received_b.append(m))
-    await bus.broadcast({"type": "status", "content": "cycle started"})
-    await asyncio.sleep(0.1)
-
-    # Both should have received the broadcast
-    assert len(received_a) + len(received_b) >= 2
+async def test_send_broadcast_routes_to_broadcast_stream(bus, redis_client):
+    # recipient_id=None -> broadcast
+    await bus.send(_msg(recipient_id=None, message_type="status"))
+    assert await redis_client.xlen(_BROADCAST_STREAM) == 1
 
 
 @pytest.mark.asyncio
-async def test_request_reply_returns_correlated_response(redis_client):
-    """Request-reply should return the response correlated by correlation_id."""
-    try:
-        from harness.orchestrator.messaging import MessageBus  # type: ignore
-        bus = MessageBus(redis=redis_client)
-    except ImportError:
-        pytest.skip("MessageBus not implemented")
-
-    async def responder(msg):
-        cid = msg.get("correlation_id")
-        if cid:
-            await bus.send(
-                msg.get("reply_to", "requestor"),
-                {"correlation_id": cid, "result": "table_list"},
-            )
-
-    await bus.subscribe("sql-agent", responder)
-
-    response = await bus.request(
-        target="sql-agent",
-        message={"action": "list_tables"},
-        timeout=2.0,
-    )
-    assert response is not None
-    assert "table_list" in str(response)
+async def test_send_registers_message_in_ttl_index(bus, redis_client):
+    msg = _msg(recipient_id="agent-sql", ttl_seconds=300.0)
+    await bus.send(msg)
+    score = await redis_client.zscore(_MSG_INDEX_KEY, msg.id)
+    assert score is not None and score > 0  # expire timestamp recorded
 
 
 @pytest.mark.asyncio
-async def test_request_raises_timeout(redis_client):
-    """Request should raise TimeoutError when no response is received in time."""
-    try:
-        from harness.orchestrator.messaging import MessageBus  # type: ignore
-        bus = MessageBus(redis=redis_client)
-    except ImportError:
-        pytest.skip("MessageBus not implemented")
-
-    with pytest.raises((asyncio.TimeoutError, TimeoutError, Exception)):
-        await bus.request(
-            target="nonexistent-agent",
-            message={"action": "do_something"},
-            timeout=0.1,
-        )
+async def test_sent_payload_roundtrips_through_the_stream(bus, redis_client):
+    sent = _msg(recipient_id="agent-sql", payload={"content": "describe orders"})
+    await bus.send(sent)
+    entries = await redis_client.xrange(f"{_STREAM_PREFIX}agent-sql")
+    assert len(entries) == 1
+    _, fields = entries[0]
+    restored = AgentMessage.from_dict(json.loads(fields["data"]))
+    assert restored.sender_id == "planner"
+    assert restored.payload == {"content": "describe orders"}
+    assert restored.id == sent.id
 
 
 @pytest.mark.asyncio
-async def test_fan_out_collects_all_replies(redis_client):
-    """fan_out should collect responses from multiple agents."""
-    try:
-        from harness.orchestrator.messaging import MessageBus  # type: ignore
-        bus = MessageBus(redis=redis_client)
-    except ImportError:
-        pytest.skip("MessageBus not implemented")
-
-    for agent_id in ["agent-1", "agent-2", "agent-3"]:
-        async def _responder(msg, aid=agent_id):
-            cid = msg.get("correlation_id")
-            if cid:
-                await bus.send(
-                    msg.get("reply_to", "orchestrator"),
-                    {"correlation_id": cid, "agent": aid, "result": f"done-{aid}"},
-                )
-
-        await bus.subscribe(agent_id, _responder)
-
-    results = await bus.fan_out(
-        targets=["agent-1", "agent-2", "agent-3"],
-        message={"action": "status"},
-        timeout=2.0,
-    )
-    assert len(results) >= 1
+async def test_multiple_sends_accumulate_on_stream(bus, redis_client):
+    for i in range(3):
+        await bus.send(_msg(recipient_id="agent-sql", payload={"n": i}))
+    assert await redis_client.xlen(f"{_STREAM_PREFIX}agent-sql") == 3
 
 
 @pytest.mark.asyncio
-async def test_expired_messages_skipped(redis_client):
-    """Messages with expired TTL should be skipped during retrieval."""
-    try:
-        from harness.orchestrator.messaging import MessageBus  # type: ignore
-        bus = MessageBus(redis=redis_client)
-    except ImportError:
-        pytest.skip("MessageBus not implemented")
-
-    received = []
-    await bus.subscribe("agent-ttl", lambda m: received.append(m))
-
-    # Send a message with a very short TTL
-    await bus.send(
-        "agent-ttl",
-        {"type": "ephemeral", "content": "expires fast"},
-        ttl_seconds=0.01,
-    )
-
-    # Wait for it to expire
-    await asyncio.sleep(0.1)
-
-    # No message should be delivered (already expired)
-    assert len(received) == 0
+async def test_is_broadcast_reflects_recipient(bus):
+    assert _msg(recipient_id=None).is_broadcast() is True
+    assert _msg(recipient_id="agent-sql").is_broadcast() is False
