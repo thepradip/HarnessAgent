@@ -76,6 +76,10 @@ models/*.safetensors
 # Paper draft — local only, not pushed
 /paper/
 
+# Planning / design notes — local only, never pushed
+*_PLAN.md
+GAP_PLAN.md
+
 # Benchmark cache (large SQLite DBs + intermediate results)
 benchmarks/cache/
 
