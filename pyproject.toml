@@ -105,9 +105,11 @@ pymupdf     = {version = ">=1.24.0", optional = true}
 trafilatura = {version = ">=1.12.0", optional = true}
 python-docx = {version = ">=1.1.0",  optional = true}
 
-# MCP server integration
+# MCP integration — client (connect to MCP servers) AND server
+# (expose the harness over MCP via `harness-mcp` / `python -m harness.mcp`).
 # pip install agent-haas[mcp]
 mcp = {version = ">=1.2.0", optional = true}
+anyio = {version = ">=4.5.0", optional = true}
 
 # Structured LLM output
 # pip install agent-haas[structured]
@@ -141,7 +143,7 @@ embed-full = ["sentence-transformers"]
 graph      = ["neo4j"]
 observe    = ["mlflow", "opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp", "prometheus-client"]
 ingestion  = ["pymupdf", "trafilatura", "python-docx"]
-mcp        = ["mcp"]
+mcp        = ["mcp", "anyio"]
 structured = ["instructor"]
 improvement = ["gepa"]
 # Bedrock Claude also needs the `anthropic` extra: pip install agent-haas[bedrock,anthropic]
@@ -170,9 +172,16 @@ all = [
     "neo4j",
     "mlflow", "opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp", "prometheus-client",
     "pymupdf", "trafilatura", "python-docx",
-    "mcp",
+    "mcp", "anyio",
     "instructor",
 ]
+
+# ---------------------------------------------------------------------------
+# Console scripts
+# ---------------------------------------------------------------------------
+[tool.poetry.scripts]
+# Expose the harness as an MCP server (stdio by default). Needs the [mcp] extra.
+harness-mcp = "harness.mcp.__main__:main"
 
 # ---------------------------------------------------------------------------
 # Dev dependencies

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -151,17 +153,15 @@ class AnthropicProvider:
             result.append({"role": role, "content": content})
         return result
 
-    async def complete(
+    def _build_request(
         self,
         messages: list[dict[str, Any]],
         *,
         max_tokens: int,
-        system: str | None = None,
-        tools: list[dict[str, Any]] | None = None,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        """Send a completion request and return a normalised LLMResponse."""
-        kwargs.pop("model", None)  # caller must not override via kwargs
+        system: str | None,
+        tools: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """Assemble the messages.create/stream request body (shared path)."""
         anthropic_messages = self._map_messages(messages)
 
         # Extract system from messages if not passed explicitly
@@ -180,6 +180,22 @@ class AnthropicProvider:
             build_kwargs["system"] = self._build_system_block(system)
         if tools:
             build_kwargs["tools"] = self._build_tools(tools)
+        return build_kwargs
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Send a completion request and return a normalised LLMResponse."""
+        kwargs.pop("model", None)  # caller must not override via kwargs
+        build_kwargs = self._build_request(
+            messages, max_tokens=max_tokens, system=system, tools=tools
+        )
 
         self._ensure_client()
         RateLimitError = self._exc_rate_limit
@@ -259,21 +275,9 @@ class AnthropicProvider:
         """Stream text deltas from the Anthropic API."""
         max_tokens = kwargs.pop("max_tokens", 4096)
         system: str | None = kwargs.pop("system", None)
-        anthropic_messages = self._map_messages(messages)
-
-        if system is None:
-            for msg in messages:
-                if msg.get("role") == "system":
-                    system = str(msg.get("content", ""))
-                    break
-
-        build_kwargs: dict[str, Any] = {
-            "model": self.model,
-            "max_tokens": max_tokens,
-            "messages": anthropic_messages,
-        }
-        if system:
-            build_kwargs["system"] = self._build_system_block(system)
+        build_kwargs = self._build_request(
+            messages, max_tokens=max_tokens, system=system, tools=None
+        )
 
         self._ensure_client()
         RateLimitError = self._exc_rate_limit
@@ -305,6 +309,135 @@ class AnthropicProvider:
                 f"Anthropic API error during stream ({exc.status_code}): {exc}",
                 failure_class=FailureClass.LLM_ERROR,
             ) from exc
+
+    async def stream_complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        on_text: Any | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Stream text deltas (forwarded to ``on_text``) while accumulating
+        tool_use blocks, then return a fully-populated LLMResponse with the
+        provider's exact input/output token counts.
+
+        Token usage is read from the ``message_start`` event (input_tokens +
+        cache_read_input_tokens) and the final ``message_delta`` event
+        (output_tokens) — never estimated. Supports streaming *with* tools.
+        """
+        kwargs.pop("model", None)
+        build_kwargs = self._build_request(
+            messages, max_tokens=max_tokens, system=system, tools=tools
+        )
+
+        self._ensure_client()
+        RateLimitError = self._exc_rate_limit
+        APITimeoutError = self._exc_timeout
+        APIConnectionError = self._exc_connection
+        APIStatusError = self._exc_status
+
+        text_parts: list[str] = []
+        # index -> {"id", "name", "json": [partial strings]}
+        tool_blocks: dict[int, dict[str, Any]] = {}
+        input_tokens = 0
+        output_tokens = 0
+        cached = False
+        model = self.model
+
+        try:
+            async with self._client.messages.stream(**build_kwargs, **kwargs) as stream:
+                async for event in stream:
+                    etype = getattr(event, "type", None)
+                    if etype == "message_start":
+                        msg = getattr(event, "message", None)
+                        model = getattr(msg, "model", model) or model
+                        usage = getattr(msg, "usage", None)
+                        if usage is not None:
+                            input_tokens = getattr(usage, "input_tokens", 0) or 0
+                            cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+                            if cache_read:
+                                input_tokens += cache_read
+                                cached = True
+                    elif etype == "content_block_start":
+                        block = getattr(event, "content_block", None)
+                        if block is not None and getattr(block, "type", None) == "tool_use":
+                            idx = getattr(event, "index", len(tool_blocks))
+                            tool_blocks[idx] = {
+                                "id": getattr(block, "id", ""),
+                                "name": getattr(block, "name", ""),
+                                "json": [],
+                            }
+                    elif etype == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        dtype = getattr(delta, "type", None)
+                        if dtype == "text_delta":
+                            piece = getattr(delta, "text", "") or ""
+                            if piece:
+                                text_parts.append(piece)
+                                await self._emit_text(on_text, piece)
+                        elif dtype == "input_json_delta":
+                            idx = getattr(event, "index", None)
+                            blk = tool_blocks.get(idx)
+                            if blk is not None:
+                                blk["json"].append(getattr(delta, "partial_json", "") or "")
+                    elif etype == "message_delta":
+                        usage = getattr(event, "usage", None)
+                        if usage is not None:
+                            output_tokens = getattr(usage, "output_tokens", output_tokens) or output_tokens
+        except RateLimitError as exc:
+            raise LLMError(
+                f"Anthropic rate limit during stream: {exc}",
+                failure_class=FailureClass.LLM_RATE_LIMIT,
+            ) from exc
+        except APITimeoutError as exc:
+            raise LLMError(
+                f"Anthropic stream timed out: {exc}",
+                failure_class=FailureClass.LLM_TIMEOUT,
+            ) from exc
+        except APIConnectionError as exc:
+            raise LLMError(
+                f"Anthropic connection error during stream: {exc}",
+                failure_class=FailureClass.LLM_ERROR,
+            ) from exc
+        except APIStatusError as exc:
+            raise LLMError(
+                f"Anthropic API error during stream ({exc.status_code}): {exc}",
+                failure_class=FailureClass.LLM_ERROR,
+            ) from exc
+
+        tool_calls: list[ToolCall] = []
+        for idx in sorted(tool_blocks):
+            blk = tool_blocks[idx]
+            raw = "".join(blk["json"])
+            try:
+                args = json.loads(raw) if raw.strip() else {}
+            except json.JSONDecodeError:
+                args = {"_raw": raw}
+            tool_calls.append(
+                ToolCall(id=blk["id"], name=blk["name"], args=args if isinstance(args, dict) else {"_raw": raw})
+            )
+
+        return LLMResponse(
+            content="".join(text_parts),
+            tool_calls=tool_calls,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            model=model,
+            provider=self.provider_name,
+            cached=cached,
+        )
+
+    @staticmethod
+    async def _emit_text(on_text: Any | None, delta: str) -> None:
+        """Invoke the per-delta callback, awaiting it when it's a coroutine."""
+        if on_text is None:
+            return
+        result = on_text(delta)
+        if inspect.isawaitable(result):
+            await result
 
     async def health_check(self) -> bool:
         """Return True if the Anthropic API is reachable.

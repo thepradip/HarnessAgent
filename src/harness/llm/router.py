@@ -427,6 +427,123 @@ class LLMRouter:
 
         raise LLMError("No providers available for streaming", failure_class=FailureClass.LLM_ERROR)
 
+    async def stream_complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int = 1024,
+        required_context: int = 0,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tenant_id: str | None = None,
+        tier: str | None = None,
+        on_text: Any | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Stream-with-tools across providers, returning a fully-populated
+        LLMResponse with the provider's exact usage and accumulated tool calls.
+
+        Text deltas are forwarded to ``on_text`` as they arrive. Provider
+        selection mirrors :meth:`complete` (tier ordering, health, context
+        window, circuit breaker). Fallback to the next provider only happens
+        BEFORE the first token is emitted — once any text has been streamed to
+        ``on_text`` a restart would duplicate output, so the error re-raises.
+
+        Providers that do not implement ``stream_complete`` are skipped (the
+        caller — base.py — falls back to ``complete()`` when none qualify).
+        """
+        target_tier = self._resolve_tier(
+            messages,
+            tier=tier,
+            system=system,
+            tools=tools,
+            required_context=required_context,
+            max_tokens=max_tokens,
+        )
+        if target_tier is not None:
+            logger.debug("Streaming tier=%s tenant=%s", target_tier, tenant_id)
+
+        last_exc: Exception | None = None
+
+        for entry in self._ordered_entries(tenant_id, target_tier):
+            provider = entry.provider
+
+            if not hasattr(provider, "stream_complete"):
+                logger.debug(
+                    "Provider %s:%s has no stream_complete — skipping for stream",
+                    provider.provider_name, provider.model,
+                )
+                continue
+
+            if required_context > 0 and required_context > entry.context_window:
+                continue
+
+            if not await self._is_healthy(provider):
+                logger.debug("Skipping %s:%s — health check failed",
+                             provider.provider_name, provider.model)
+                continue
+
+            breaker = self._get_breaker(provider)
+
+            # Track whether any text reached the caller — once it has, falling
+            # back would duplicate the already-streamed output.
+            emitted = {"any": False}
+
+            async def _wrapped_on_text(delta: str) -> None:
+                emitted["any"] = True
+                if on_text is not None:
+                    result = on_text(delta)
+                    if hasattr(result, "__await__"):
+                        await result
+
+            try:
+                async with breaker.call():
+                    return await provider.stream_complete(
+                        messages,
+                        max_tokens=max_tokens,
+                        system=system,
+                        tools=tools,
+                        on_text=_wrapped_on_text,
+                        **kwargs,
+                    )
+            except CircuitOpenError as exc:
+                if emitted["any"]:
+                    logger.error(
+                        "Stream failed mid-output for %s:%s after partial yield; "
+                        "not falling back (would duplicate output): %s",
+                        provider.provider_name, provider.model, exc,
+                    )
+                    raise
+                logger.warning("Circuit open for %s:%s, trying next provider for stream",
+                               provider.provider_name, provider.model)
+                last_exc = exc
+                continue
+            except LLMError as exc:
+                if emitted["any"]:
+                    logger.error(
+                        "Stream failed mid-output for %s:%s after partial yield; "
+                        "re-raising (%s)",
+                        provider.provider_name, provider.model, exc.failure_class,
+                    )
+                    raise
+                if exc.failure_class not in _RETRYABLE:
+                    logger.error(
+                        "Non-retryable stream error for %s:%s (%s) — not falling back",
+                        provider.provider_name, provider.model, exc.failure_class,
+                    )
+                    raise
+                logger.warning(
+                    "Stream error for %s:%s (%s), trying next provider",
+                    provider.provider_name, provider.model, exc.failure_class,
+                )
+                last_exc = exc
+                continue
+
+        raise LLMError(
+            f"No providers available for stream_complete. Last error: {last_exc}",
+            failure_class=FailureClass.LLM_ERROR,
+        ) from last_exc
+
     async def health_check_all(self) -> dict[str, bool]:
         """Check health of all registered providers concurrently."""
         async def _check(entry: ProviderEntry) -> tuple[str, bool]:

@@ -12,6 +12,7 @@ Key differences from OpenAICompatProvider (local.py):
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -238,6 +239,143 @@ class OpenAIProvider:
             if exc.status_code == 429:
                 raise LLMError(str(exc), failure_class=FailureClass.LLM_RATE_LIMIT) from exc
             raise LLMError(str(exc), failure_class=FailureClass.LLM_ERROR) from exc
+
+    async def stream_complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        on_text: Any | None = None,
+        temperature: float | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Stream text deltas (forwarded to ``on_text``) while accumulating
+        tool_call deltas, then return a fully-populated LLMResponse with the
+        exact usage reported in the final ``include_usage`` chunk.
+
+        Requests ``stream_options={"include_usage": True}`` so the API emits a
+        trailing usage-only chunk — token counts are read from it, never
+        estimated. Supports streaming *with* tools.
+        """
+        prepared = self._prepare_messages(messages, system)
+        request: dict[str, Any] = {
+            "model": self.model,
+            "messages": prepared,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+
+        if self._is_reasoning:
+            request["max_completion_tokens"] = max_tokens
+        else:
+            request["max_tokens"] = max_tokens
+            if temperature is not None:
+                request["temperature"] = temperature
+
+        if tools:
+            request["tools"] = [self._to_openai_tool(t) for t in tools]
+            request["tool_choice"] = "auto"
+
+        for k, v in kwargs.items():
+            if k in ("model", "messages", "max_tokens", "max_completion_tokens", "stream"):
+                continue
+            request.setdefault(k, v)
+
+        self._ensure_client()
+        RateLimitError = self._exc_rate_limit
+        APITimeoutError = self._exc_timeout
+        APIConnectionError = self._exc_connection
+        APIStatusError = self._exc_status
+
+        text_parts: list[str] = []
+        # index -> {"id", "name", "args": [partial strings]}
+        tool_acc: dict[int, dict[str, Any]] = {}
+        input_tokens = 0
+        output_tokens = 0
+        cached = False
+        model = self.model
+
+        try:
+            stream = await self._client.chat.completions.create(**request)
+            async for chunk in stream:
+                model = getattr(chunk, "model", model) or model
+                choices = getattr(chunk, "choices", None) or []
+                if choices:
+                    delta = getattr(choices[0], "delta", None)
+                    if delta is not None:
+                        content = getattr(delta, "content", None)
+                        if content:
+                            text_parts.append(content)
+                            await self._emit_text(on_text, content)
+                        for tc in getattr(delta, "tool_calls", None) or []:
+                            idx = getattr(tc, "index", 0) or 0
+                            slot = tool_acc.setdefault(idx, {"id": "", "name": "", "args": []})
+                            if getattr(tc, "id", None):
+                                slot["id"] = tc.id
+                            fn = getattr(tc, "function", None)
+                            if fn is not None:
+                                if getattr(fn, "name", None):
+                                    slot["name"] = fn.name
+                                if getattr(fn, "arguments", None):
+                                    slot["args"].append(fn.arguments)
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    input_tokens = getattr(usage, "prompt_tokens", input_tokens) or input_tokens
+                    output_tokens = getattr(usage, "completion_tokens", output_tokens) or output_tokens
+                    details = getattr(usage, "prompt_tokens_details", None)
+                    if details is not None:
+                        cached_tokens = getattr(details, "cached_tokens", 0) or 0
+                        cached = cached or cached_tokens > 0
+        except RateLimitError as exc:
+            raise LLMError(str(exc), failure_class=FailureClass.LLM_RATE_LIMIT) from exc
+        except APITimeoutError as exc:
+            raise LLMError(str(exc), failure_class=FailureClass.LLM_TIMEOUT) from exc
+        except APIConnectionError as exc:
+            raise LLMError(str(exc), failure_class=FailureClass.LLM_ERROR) from exc
+        except APIStatusError as exc:
+            fc = (
+                FailureClass.LLM_RATE_LIMIT
+                if getattr(exc, "status_code", None) == 429
+                else FailureClass.LLM_ERROR
+            )
+            raise LLMError(str(exc), failure_class=fc) from exc
+
+        tool_calls: list[ToolCall] = []
+        for idx in sorted(tool_acc):
+            slot = tool_acc[idx]
+            raw = "".join(slot["args"])
+            try:
+                args = json.loads(raw) if raw.strip() else {}
+            except json.JSONDecodeError:
+                args = {"_raw": raw}
+            tool_calls.append(
+                ToolCall(
+                    id=slot["id"],
+                    name=slot["name"],
+                    args=args if isinstance(args, dict) else {"_raw": raw},
+                )
+            )
+
+        return LLMResponse(
+            content="".join(text_parts),
+            tool_calls=tool_calls,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            model=model,
+            provider=self.provider_name,
+            cached=cached,
+        )
+
+    @staticmethod
+    async def _emit_text(on_text: Any | None, delta: str) -> None:
+        """Invoke the per-delta callback, awaiting it when it's a coroutine."""
+        if on_text is None:
+            return
+        result = on_text(delta)
+        if inspect.isawaitable(result):
+            await result
 
     async def health_check(self) -> bool:
         """Check reachability by listing one model."""

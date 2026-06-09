@@ -1095,10 +1095,17 @@ class BaseAgent:
         remaining_tokens = ctx.max_tokens - ctx.token_count
         max_tokens = min(4096, max(256, remaining_tokens // 2))
 
-        # Use streaming when requested and no tools are needed (streaming + tools
-        # requires special handling that varies by provider)
-        if ctx.metadata.get("stream_tokens") and not tools:
-            return await self._call_llm_streaming(ctx, messages, system, max_tokens)
+        # Real token streaming — enabled per-run via ctx.metadata["stream_tokens"]
+        # (default off). Unlike the old path this streams REGARDLESS of whether
+        # tools are registered: stream_complete accumulates tool_use/tool_call
+        # deltas into proper ToolCall objects and returns exact provider usage,
+        # so cost/budget/tool-execution downstream are identical to complete().
+        if ctx.metadata.get("stream_tokens") and hasattr(self._llm_router, "stream_complete"):
+            streamed = await self._call_llm_streaming(ctx, messages, system, tools, max_tokens)
+            if streamed is not None:
+                return streamed
+            # stream_complete unavailable / failed before first token — fall
+            # through to the non-streaming path below.
 
         return await self._llm_router.complete(
             messages=messages,
@@ -1113,52 +1120,43 @@ class BaseAgent:
         ctx: AgentContext,
         messages: list[dict[str, Any]],
         system: str,
+        tools: list[dict[str, Any]],
         max_tokens: int,
-    ) -> LLMResponse:
-        """Stream tokens from the LLM, publishing each delta as a StepEvent.
+    ) -> LLMResponse | None:
+        """Stream tokens via the router's stream_complete, emitting each text
+        delta as a ``token_delta`` StepEvent.
 
-        Accumulates the full text and returns a synthetic LLMResponse so the
-        rest of the agent loop (history, cost tracking, safety) works unchanged.
+        Returns the provider's fully-populated LLMResponse — REAL usage and
+        accumulated tool_calls — so the rest of the agent loop (history, cost,
+        budget, safety, tool execution) works unchanged. Returns ``None`` when
+        no provider supports stream_complete or it failed before emitting any
+        token, signalling the caller to fall back to ``complete()``.
         """
-        chunks: list[str] = []
-        try:
-            async for delta in self._llm_router.stream(
-                messages=messages,
-                system=system,
-                max_tokens=max_tokens,
-            ):
-                chunks.append(delta)
-                # Publish token delta for SSE clients
-                await self._emit_event(
-                    StepEvent(
-                        run_id=ctx.run_id,
-                        step=ctx.step_count,
-                        event_type="token_delta",
-                        payload={"delta": delta},
-                        timestamp=_utcnow(),
-                    )
+        async def _on_text(delta: str) -> None:
+            await self._emit_event(
+                StepEvent(
+                    run_id=ctx.run_id,
+                    step=ctx.step_count,
+                    event_type="token_delta",
+                    payload={"text": delta, "step": ctx.step_count},
+                    timestamp=_utcnow(),
                 )
-        except Exception as exc:
-            logger.warning("Streaming LLM call failed, falling back to complete(): %s", exc)
-            return await self._llm_router.complete(
-                messages=messages,
-                system=system,
-                max_tokens=max_tokens,
-                tenant_id=ctx.tenant_id,
             )
 
-        full_text = "".join(chunks)
-        # Estimate tokens (streaming responses don't always return exact counts)
-        estimated_tokens = max(1, len(full_text) // 4)
-        return LLMResponse(
-            content=full_text,
-            tool_calls=[],
-            input_tokens=estimated_tokens,
-            output_tokens=estimated_tokens,
-            model=getattr(self._llm_router, "model", "unknown"),
-            provider=getattr(self._llm_router, "provider_name", "unknown"),
-            cached=False,
-        )
+        try:
+            return await self._llm_router.stream_complete(
+                messages=messages,
+                system=system,
+                tools=tools if tools else None,
+                max_tokens=max_tokens,
+                tenant_id=ctx.tenant_id,
+                on_text=_on_text,
+            )
+        except Exception as exc:
+            logger.warning(
+                "stream_complete failed (falling back to complete()): %s", exc
+            )
+            return None
 
     # ------------------------------------------------------------------
     # Memory helpers

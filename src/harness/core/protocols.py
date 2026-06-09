@@ -83,6 +83,25 @@ class LLMProvider(Protocol):
         """Stream text deltas from the LLM."""
         ...
 
+    # Optional capability: streaming WITH tool-call accumulation and exact
+    # provider usage. Providers that cannot stream-with-tools simply do not
+    # implement this — callers must feature-detect with ``hasattr`` and fall
+    # back to ``complete()``. Declared here (not enforced at runtime) so the
+    # contract is discoverable and typed.
+    async def stream_complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        on_text: Any | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Stream text deltas (via ``on_text``) and return a fully-populated
+        LLMResponse with real usage + accumulated tool calls."""
+        ...
+
     async def health_check(self) -> bool:
         """Return True if the provider is reachable and healthy."""
         ...
