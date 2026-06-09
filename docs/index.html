@@ -312,6 +312,7 @@
   <div class="nav-group">
     <div class="nav-group-label">Core Subsystems</div>
     <a class="nav-item" href="#llm-router"><span class="dot"></span> LLM Router</a>
+    <a class="nav-item" href="#routing"><span class="dot"></span> Cost-Aware Routing</a>
     <a class="nav-item" href="#context-engineering"><span class="dot"></span> Context Engineering</a>
     <a class="nav-item" href="#feedback"><span class="dot"></span> Feedback Channel</a>
     <a class="nav-item" href="#rlvr"><span class="dot"></span> RLVR</a>
@@ -649,6 +650,76 @@ router.<span class="fn">register</span>(<span class="cl">SgLangProvider</span>(b
 
 <span class="cm"># llama.cpp server</span>
 router.<span class="fn">register</span>(<span class="cl">LlamaCppProvider</span>(base_url=<span class="st">"http://localhost:8080"</span>), priority=<span class="nm">3</span>)</code><span class="code-lang">python</span></pre>
+</section>
+
+<!-- ══════════════════════ COST-AWARE ROUTING ══════════════════════ -->
+<section class="section" id="routing">
+  <h2>Cost-Aware Routing</h2>
+  <p>On top of health- and context-aware fallback, the router can choose a model by <strong>cost/capability tier</strong> per request. Each request is scored for complexity, mapped to a tier (<code>cheap</code> / <code>standard</code> / <code>premium</code>), and served by the tier's model — falling back through the priority chain if that tier is unavailable. The whole mechanism is opt-in: with no scorer or tier map configured, the router behaves exactly as a priority-ordered router.</p>
+
+  <h3>Why a heuristic scorer (and not a model)</h3>
+  <p>The most efficient router adds <strong>no extra LLM call</strong>. <code>HeuristicComplexityScorer</code> inspects signals already in the request — token estimate, tool use, code/SQL/reasoning keywords, turn count, required context — and returns a tier in microseconds at zero cost. Calling a model to decide which model to call would add latency and spend to <em>every</em> request, undermining the savings. The <code>ComplexityScorer</code> protocol lets you swap in a learned classifier later (a fastembed embedding head, or a small LLM like Haiku / gpt-4o-mini) without touching the router.</p>
+
+  <table>
+    <thead><tr><th>Signal</th><th>Routes to</th></tr></thead>
+    <tbody>
+      <tr><td>Tool use, code fences, or reasoning/SQL keywords</td><td><code>premium</code></td></tr>
+      <tr><td>Large token estimate, many turns, or big required context</td><td><code>premium</code></td></tr>
+      <tr><td>Short, single-shot, no complexity signals</td><td><code>cheap</code></td></tr>
+      <tr><td>Everything in between</td><td><code>standard</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Multi-vendor providers</h3>
+  <p>Tiers can mix vendors freely. Beyond Anthropic, Azure, and OpenAI, a declarative catalog wires every <strong>OpenAI-API-compatible vendor</strong> with no new adapter code — each is the existing OpenAI provider pointed at the vendor's <code>base_url</code>. Enable one by setting its key.</p>
+  <table>
+    <thead><tr><th>Vendor</th><th>Enable with</th><th>Default tier(s)</th></tr></thead>
+    <tbody>
+      <tr><td>DeepSeek</td><td><code>DEEPSEEK_API_KEY</code></td><td>chat → cheap, reasoner → premium</td></tr>
+      <tr><td>Together AI</td><td><code>TOGETHER_API_KEY</code></td><td>standard</td></tr>
+      <tr><td>Fireworks</td><td><code>FIREWORKS_API_KEY</code></td><td>standard</td></tr>
+      <tr><td>Groq</td><td><code>GROQ_API_KEY</code></td><td>cheap (ultra-fast)</td></tr>
+      <tr><td>OpenRouter</td><td><code>OPENROUTER_API_KEY</code></td><td>cheap</td></tr>
+      <tr><td>Mistral</td><td><code>MISTRAL_API_KEY</code></td><td>large → premium, small → cheap</td></tr>
+      <tr><td>xAI (Grok)</td><td><code>XAI_API_KEY</code></td><td>standard</td></tr>
+    </tbody>
+  </table>
+
+  <h3>AWS Bedrock</h3>
+  <p>Two adapters cover Bedrock's two request shapes — install with <code>pip install agent-haas[bedrock,anthropic]</code> and set <code>BEDROCK_ENABLED=true</code> (AWS credentials resolve from the standard chain):</p>
+  <div class="grid-2">
+    <div class="card">
+      <h3 style="margin-top:0;font-size:14px;color:var(--accent-5)">BedrockClaudeProvider</h3>
+      <ul>
+        <li>Claude on Bedrock via <code>AsyncAnthropicBedrock</code></li>
+        <li><code>anthropic.</code>-prefixed model IDs</li>
+        <li>Reuses the Anthropic message/tool/response path</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;font-size:14px;color:var(--accent-4)">BedrockConverseProvider</h3>
+      <ul>
+        <li>Llama / Mistral / DeepSeek / Titan / Cohere</li>
+        <li>Unified boto3 <code>bedrock-runtime</code> Converse API</li>
+        <li>Text + system (route tool calls to a Claude tier)</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Per-tenant model maps</h3>
+  <p>Each tenant can be served by its own model per tier. The agent threads <code>tenant_id</code> into every LLM call; the router reads that tenant's tier→model map (keys are <code>provider:model</code>, across vendors) and prefers those providers. Internal work like history summarization is pinned to <code>cheap</code> so it never burns the premium model.</p>
+<pre><code><span class="cm"># .env — enable vendors + Bedrock, then map tiers per tenant</span>
+DEEPSEEK_API_KEY=sk-...
+BEDROCK_ENABLED=true
+BEDROCK_CLAUDE_MODELS=anthropic.claude-opus-4-7:premium,anthropic.claude-haiku-4-5:cheap
+ROUTING_TENANT_TIERS={<span class="st">"acme"</span>:{<span class="st">"cheap"</span>:[<span class="st">"deepseek:deepseek-chat"</span>],
+                     <span class="st">"premium"</span>:[<span class="st">"bedrock:anthropic.claude-opus-4-7"</span>]}}</code><span class="code-lang">bash</span></pre>
+<pre><code><span class="cm"># The agent passes tenant_id automatically; you can also pin a tier explicitly:</span>
+resp = <span class="kw">await</span> router.<span class="fn">complete</span>(messages, max_tokens=<span class="nm">1024</span>,
+                             tenant_id=ctx.tenant_id)   <span class="cm"># tier inferred by complexity</span>
+resp = <span class="kw">await</span> router.<span class="fn">complete</span>(messages, max_tokens=<span class="nm">1024</span>,
+                             tier=<span class="st">"premium"</span>)              <span class="cm"># or force a tier</span></code><span class="code-lang">python</span></pre>
+  <p style="color:var(--muted);font-size:13px">Routing precedence: explicit <code>tier</code> → complexity scorer → plain priority order. Tier maps fall back to each provider's tier tag when no per-tenant map is set. Cost-aware routing is enabled by default (<code>ROUTING_COMPLEXITY_ENABLED=true</code>).</p>
 </section>
 
 <!-- ══════════════════════ CONTEXT ENGINEERING ══════════════════════ -->
