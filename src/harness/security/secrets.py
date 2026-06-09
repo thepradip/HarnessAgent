@@ -362,10 +362,12 @@ def mask(value: str) -> str:
     """
     if not value:
         return "[EMPTY]"
-    if len(value) <= 8:
+    # Only reveal prefix/suffix for long values; short secrets would otherwise
+    # leak most of their characters (e.g. a 13-char value showing 12/13).
+    if len(value) < 20:
         return "[MASKED]"
     prefix = value[:8]
-    suffix = value[-4:] if len(value) > 12 else ""
+    suffix = value[-4:]
     return f"{prefix}[MASKED]{suffix}"
 
 

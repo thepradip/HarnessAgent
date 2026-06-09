@@ -26,7 +26,7 @@ class _Pattern:
 
 _PATTERNS: list[_Pattern] = [
     _Pattern("anthropic",    re.compile(r"sk-ant-[A-Za-z0-9\-_]{20,}"),         "[ANTHROPIC_KEY REDACTED]"),
-    _Pattern("openai",       re.compile(r"sk-[A-Za-z0-9]{32,}"),                "[OPENAI_KEY REDACTED]"),
+    _Pattern("openai",       re.compile(r"sk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{32,}"), "[OPENAI_KEY REDACTED]"),
     _Pattern("github_pat",   re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),       "[GITHUB_PAT REDACTED]"),
     _Pattern("github_ghp",   re.compile(r"ghp_[A-Za-z0-9]{36,}"),              "[GITHUB_TOKEN REDACTED]"),
     _Pattern("slack_bot",    re.compile(r"xoxb-[0-9]+-[0-9]+-[A-Za-z0-9]+"),   "[SLACK_BOT_TOKEN REDACTED]"),

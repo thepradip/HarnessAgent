@@ -167,10 +167,16 @@ class DeadLetterQueue:
                         try:
                             data = json.loads(raw)
                             if data.get("id") == entry_id:
-                                # Remove the element and re-push with resolved status
+                                # Remove the element from the queue.
                                 await self._redis.lrem(key, 1, raw)
-                                data["status"] = "resolved"
-                                # Do NOT re-push — it's resolved
+                                # Sync the depth gauge — the queue just shrank,
+                                # otherwise dlq_depth stays stale after ack.
+                                tenant_id = data.get("tenant_id")
+                                if not tenant_id:
+                                    key_str = key.decode() if isinstance(key, bytes) else key
+                                    tenant_id = key_str[len(self._KEY_PREFIX):]
+                                if tenant_id:
+                                    await self._update_gauge(tenant_id)
                                 logger.info("DLQ entry %s acknowledged", entry_id)
                                 return
                         except (json.JSONDecodeError, TypeError):

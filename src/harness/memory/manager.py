@@ -77,6 +77,7 @@ class MemoryManager:
         context_engine: ContextEngine | None = None,
         session_registry: SessionMemoryRegistry | None = None,
         context_pipeline: ContextPipeline | None = None,
+        session_redis: Any | None = None,
     ) -> None:
         self._short_term = short_term
         self._vector_store = vector_store
@@ -87,6 +88,9 @@ class MemoryManager:
         self._graph_rag = GraphRAGEngine(graph, vector_store, embedder)
         self._sessions = session_registry
         self._pipeline = context_pipeline
+        # Raw Redis client created in create() for SessionMemoryRegistry — owned
+        # here so close() can release it.
+        self._session_redis = session_redis
 
     # ------------------------------------------------------------------
     # Context pipeline (L1 / L2 / L3)
@@ -404,6 +408,36 @@ class MemoryManager:
         """Clear all short-term memory for the given run_id."""
         await self._short_term.clear(run_id)
 
+    async def close(self) -> None:
+        """Close every client this manager owns (Redis pools, vector + graph).
+
+        Idempotent and best-effort — a failure closing one client does not
+        prevent the others from being closed.
+        """
+        closers = [
+            self._short_term,
+            self._context_engine,
+            self._vector_store,
+            self._graph,
+        ]
+        for owner in closers:
+            close = getattr(owner, "close", None)
+            if close is None:
+                continue
+            try:
+                result = close()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception as exc:
+                logger.debug("Error closing %s: %s", type(owner).__name__, exc)
+
+        if self._session_redis is not None:
+            try:
+                await self._session_redis.aclose()
+            except Exception as exc:
+                logger.debug("Error closing session Redis: %s", exc)
+            self._session_redis = None
+
     # ------------------------------------------------------------------
     # Factory
     # ------------------------------------------------------------------
@@ -472,4 +506,5 @@ class MemoryManager:
             context_engine=context_engine,
             session_registry=session_registry,
             context_pipeline=context_pipeline,
+            session_redis=_redis_for_sessions,
         )

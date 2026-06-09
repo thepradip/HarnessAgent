@@ -251,7 +251,12 @@ class BedrockConverseProvider:
         )
 
     async def stream(self, messages: list[dict[str, Any]], **kwargs: Any):
-        """Bedrock Converse streaming — yields text deltas."""
+        """Bedrock Converse streaming — yields text deltas.
+
+        boto3's ``EventStream`` is a blocking iterator. Iterating it directly in
+        this async generator would block the event loop on every network read,
+        so we drain it in a worker thread and hand chunks across a queue.
+        """
         self._ensure_client()
         system = kwargs.get("system")
         max_tokens = kwargs.get("max_tokens", 1024)
@@ -263,10 +268,37 @@ class BedrockConverseProvider:
         if system:
             request["system"] = [{"text": system}]
         response = await asyncio.to_thread(self._client.converse_stream, **request)
-        for event in response.get("stream", []):
-            delta = event.get("contentBlockDelta", {}).get("delta", {})
-            if "text" in delta:
-                yield delta["text"]
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        _DONE = object()
+
+        def _drain() -> None:
+            try:
+                for event in response.get("stream", []):
+                    delta = event.get("contentBlockDelta", {}).get("delta", {})
+                    if "text" in delta:
+                        loop.call_soon_threadsafe(queue.put_nowait, delta["text"])
+            except Exception as exc:  # surface stream errors to the consumer
+                loop.call_soon_threadsafe(queue.put_nowait, exc)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, _DONE)
+
+        drain_task = asyncio.create_task(asyncio.to_thread(_drain))
+        try:
+            while True:
+                item = await queue.get()
+                if item is _DONE:
+                    break
+                if isinstance(item, Exception):
+                    raise LLMError(
+                        f"Bedrock Converse stream failed: {item}",
+                        failure_class=FailureClass.LLM_ERROR,
+                        context={"model": self.model},
+                    ) from item
+                yield item
+        finally:
+            await drain_task
 
     async def health_check(self) -> bool:
         try:

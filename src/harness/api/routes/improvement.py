@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from harness.api.deps import (
@@ -263,21 +263,18 @@ async def reject_patch(
 
 @router.post("/improvement/cycle", response_model=PatchOutcomeResponse)
 async def trigger_improvement_cycle(
+    request: Request,
     agent_type: Optional[str] = Query(default=None),
     tenant_id: str = Depends(get_current_tenant),
     redis: Any = Depends(get_redis),
     pm: Any = Depends(get_prompt_manager),
 ) -> PatchOutcomeResponse:
-    """Manually trigger a Hermes improvement cycle for an agent type."""
-    try:
-        hermes_state = getattr(redis, "_app_state", None)
-        hermes = None
-        if hasattr(redis, "app") and hasattr(redis.app, "state"):
-            hermes = getattr(redis.app.state, "hermes_loop", None)
-    except Exception:
-        hermes = None
+    """Manually trigger a Hermes improvement cycle for an agent type.
 
-    # If Hermes is not available, generate a patch directly
+    The Hermes loop is stored on ``app.state.hermes_loop`` when the API is
+    started with the full improvement stack. If it is not wired, we return a
+    501 rather than a 200 that masks a no-op.
+    """
     error_collector = _get_error_collector(redis)
     errors = await error_collector.get_recent(agent_type or "sql", limit=20)
 
@@ -291,13 +288,29 @@ async def trigger_improvement_cycle(
             eval_summary=f"Not enough errors to trigger cycle (found {len(errors)})",
         )
 
+    hermes = getattr(request.app.state, "hermes_loop", None)
+    if hermes is None:
+        # Be honest: we cannot run a cycle without the Hermes loop wired.
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=(
+                "Improvement cycle not available: Hermes loop is not configured "
+                "on this API instance. Start the API with the full improvement "
+                f"stack or run the cycle via the worker ({len(errors)} errors "
+                f"pending for agent_type={agent_type or 'sql'})."
+            ),
+        )
+
+    outcome = await hermes.run_cycle(agent_type=agent_type or "sql", errors=errors)
     return PatchOutcomeResponse(
-        patch_id="manual-cycle",
-        baseline_score=0.0,
-        patched_score=0.0,
-        improvement=0.0,
-        accepted=False,
-        eval_summary=f"Cycle queued for {len(errors)} errors on agent_type={agent_type}",
+        patch_id=getattr(outcome, "patch_id", "cycle"),
+        baseline_score=getattr(outcome, "baseline_score", 0.0),
+        patched_score=getattr(outcome, "patched_score", 0.0),
+        improvement=getattr(outcome, "improvement", 0.0),
+        accepted=getattr(outcome, "accepted", False),
+        eval_summary=getattr(
+            outcome, "eval_summary", f"Cycle run for {len(errors)} errors on agent_type={agent_type}"
+        ),
     )
 
 

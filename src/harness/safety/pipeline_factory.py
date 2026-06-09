@@ -51,7 +51,10 @@ def build_pipeline(
             "guardrail package not installed — using HardConstraintPipeline for agent_type=%s",
             agent_type,
         )
-        return _HardConstraintPipeline(blocked_tools=config.blocked_tools)
+        return _HardConstraintPipeline(
+            blocked_tools=config.blocked_tools,
+            allowed_tools=config.allowed_tools,
+        )
 
     input_stages: list[Any] = []
     intermediate_stages: list[Any] = []
@@ -324,8 +327,17 @@ class _HardConstraintPipeline:
     - Output: PII redaction + secret leak detection/redaction
     """
 
-    def __init__(self, blocked_tools: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        blocked_tools: list[str] | None = None,
+        allowed_tools: list[str] | None = None,
+    ) -> None:
         self._blocked_tools: set[str] = set(blocked_tools or [])
+        # None means "no allowlist — all tools permitted"; an empty list would
+        # block everything, so preserve the None distinction.
+        self._allowed_tools: set[str] | None = (
+            set(allowed_tools) if allowed_tools is not None else None
+        )
         try:
             from harness.security.scanner import SecretScanner
             self._secret_scanner: Any = SecretScanner()
@@ -367,6 +379,22 @@ class _HardConstraintPipeline:
             return _GuardResult(
                 blocked=True,
                 reason=f"Tool '{tool_name}' is in the blocked list",
+            )
+
+        # 1b. Allowlist enforcement — when an allowlist is configured, any tool
+        #     not on it is blocked (the guardrail ToolPolicy does the same).
+        if (
+            self._allowed_tools is not None
+            and tool_name
+            and tool_name not in self._allowed_tools
+        ):
+            logger.warning(
+                "HardConstraintPipeline: tool '%s' not in allowlist %s",
+                tool_name, sorted(self._allowed_tools),
+            )
+            return _GuardResult(
+                blocked=True,
+                reason=f"Tool '{tool_name}' is not in the allowed list",
             )
 
         # 2. Inspect SQL arguments for destructive statements

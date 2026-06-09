@@ -313,9 +313,20 @@ class LLMVerifierRewardFn:
             return RewardSignal(reward=0.0, verdict="incorrect",
                                 confidence=0.7, source="llm_verifier",
                                 reasoning="rule: INCORRECT tag found")
-        # True fallback: count positive vs negative keywords
-        pos = sum(1 for w in ("correct", "yes", "right", "accurate", "match") if w in raw.lower())
-        neg = sum(1 for w in ("incorrect", "wrong", "no", "error", "mismatch") if w in raw.lower())
+        # True fallback: count positive vs negative keywords. Use word-boundary
+        # regexes so "incorrect" is not counted as "correct" and "know" is not
+        # counted as "no". Negatives are checked first / on equal footing so an
+        # ambiguous response never reads as positive by accident.
+        lower = raw.lower()
+
+        def _count(words: tuple[str, ...]) -> int:
+            return sum(
+                1 for w in words
+                if re.search(r"\b" + re.escape(w) + r"\b", lower)
+            )
+
+        neg = _count(("incorrect", "wrong", "no", "error", "mismatch"))
+        pos = _count(("correct", "yes", "right", "accurate", "match"))
         if pos > neg:
             return RewardSignal(reward=0.7, verdict="correct",
                                 confidence=0.5, source="llm_verifier",

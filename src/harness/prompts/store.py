@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 _KEY_PREFIX = "harness:prompt"
 _INDEX_PREFIX = "harness:prompt_index"
 _ACTIVE_PREFIX = "harness:prompt_active"
+_COUNTER_PREFIX = "harness:prompt_counter"
 
 
 def _version_key(agent_type: str, version_id: str) -> str:
@@ -25,6 +26,10 @@ def _index_key(agent_type: str) -> str:
 
 def _active_key(agent_type: str) -> str:
     return f"{_ACTIVE_PREFIX}:{agent_type}"
+
+
+def _counter_key(agent_type: str) -> str:
+    return f"{_COUNTER_PREFIX}:{agent_type}"
 
 
 class PromptStore:
@@ -97,10 +102,12 @@ class PromptStore:
         Returns:
             The newly created PromptVersion (saved to Redis).
         """
-        # Determine next version number
-        index_key = _index_key(agent_type)
-        count = await self._redis.zcard(index_key)
-        next_version = int(count) + 1
+        # Determine next version number via a monotonic per-agent counter.
+        # zcard+1 collides after delete() (count shrinks) and under concurrent
+        # creates (two callers read the same count), corrupting the
+        # version_number-scored index that rollback() depends on. INCR is atomic
+        # and never reuses a number.
+        next_version = int(await self._redis.incr(_counter_key(agent_type)))
 
         version = PromptVersion(
             agent_type=agent_type,

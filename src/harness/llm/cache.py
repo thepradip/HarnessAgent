@@ -33,6 +33,34 @@ def _messages_hash(messages: list[dict[str, Any]], tenant_id: str) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _hget(raw: dict[Any, Any], field: str, default: str = "") -> str:
+    """Read a hash field that may be keyed/valued as bytes or str.
+
+    Redis clients differ: ``decode_responses=True`` yields str keys/values,
+    otherwise bytes. Look the field up under both forms and normalise the value
+    to ``str`` so the cache hits in both client modes.
+    """
+    val = raw.get(field)
+    if val is None:
+        val = raw.get(field.encode())
+    if val is None:
+        return default
+    if isinstance(val, bytes):
+        return val.decode()
+    return str(val)
+
+
+def _is_single_turn(messages: list[dict[str, Any]]) -> bool:
+    """True if the request has no prior assistant turns.
+
+    Semantic (fuzzy) matching is only safe for single-turn requests: two
+    unrelated multi-turn conversations whose final user message is identical
+    (e.g. "yes") must not cross-hit, since their meaning depends on the prior
+    turns the embedding ignores.
+    """
+    return not any(m.get("role") == "assistant" for m in messages)
+
+
 def _last_user_text(messages: list[dict[str, Any]]) -> str:
     """Return the text content of the last user message."""
     for msg in reversed(messages):
@@ -80,18 +108,29 @@ class SemanticLLMCache:
         if not query_text:
             return None
 
-        # Fast path: exact SHA-256 match — no embedding needed
+        # Fast path: exact SHA-256 match — no embedding needed. Safe for any
+        # number of turns because the hash covers the full message list.
         msg_hash = _messages_hash(messages, self._tenant_id)
         exact_key = self._key(msg_hash)
         try:
             raw_exact = await self._redis.hgetall(exact_key)
             if raw_exact:
-                response = raw_exact.get(b"response", b"").decode()
+                response = _hget(raw_exact, "response")
                 if response:
                     logger.debug("Cache exact HIT tenant=%s", self._tenant_id)
                     return response
         except Exception as exc:
             logger.debug("Cache exact lookup failed: %s", exc)
+
+        # Slow (semantic) path is only safe for single-turn requests: with prior
+        # assistant turns the final user message ("yes") is ambiguous and would
+        # cross-hit unrelated conversations. Skip the vector scan otherwise.
+        if not _is_single_turn(messages):
+            logger.debug(
+                "Cache: skipping semantic scan for multi-turn request tenant=%s",
+                self._tenant_id,
+            )
+            return None
 
         # Slow path: vector scan — cap at _SCAN_CAP most-recent entries
         try:
@@ -115,9 +154,9 @@ class SemanticLLMCache:
                 continue
             try:
                 stored_embedding: list[float] = json.loads(
-                    raw.get(b"embedding", b"[]").decode()
+                    _hget(raw, "embedding", "[]")
                 )
-                response: str = raw.get(b"response", b"").decode()
+                response: str = _hget(raw, "response")
                 score = _cosine_similarity(query_embedding, stored_embedding)
                 if score > best_score:
                     best_score = score

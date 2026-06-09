@@ -82,7 +82,7 @@ class LLMRouter:
         config: LLMRouterConfig | None = None,
         registry: CircuitBreakerRegistry | None = None,
         cache: Any | None = None,
-        health_ttl: float = 5.0,
+        health_ttl: float = 60.0,
     ) -> None:
         self._config = config or LLMRouterConfig()
         self._registry = registry or CircuitBreakerRegistry()
@@ -382,12 +382,47 @@ class LLMRouter:
                 continue
 
             breaker = self._get_breaker(provider)
+            yielded = False
             try:
                 async with breaker.call():
                     async for token in provider.stream(messages, **stream_kwargs):
+                        yielded = True
                         yield token
                     return
-            except (CircuitOpenError, LLMError):
+            except CircuitOpenError as exc:
+                # Circuit opened before any output — safe to try the next provider.
+                if yielded:
+                    logger.error(
+                        "Stream failed mid-output for %s:%s after partial yield; "
+                        "not falling back (would duplicate output): %s",
+                        provider.provider_name, provider.model, exc,
+                    )
+                    raise
+                logger.warning("Circuit open for %s:%s, trying next provider for stream",
+                               provider.provider_name, provider.model)
+                continue
+            except LLMError as exc:
+                # Never fall back after partial output — restarting would
+                # duplicate/garble the already-streamed tokens.
+                if yielded:
+                    logger.error(
+                        "Stream failed mid-output for %s:%s after partial yield; "
+                        "re-raising (%s)",
+                        provider.provider_name, provider.model, exc.failure_class,
+                    )
+                    raise
+                # Before any output: only fall back on retryable classes;
+                # re-raise non-retryable failures (context limit, auth, parse).
+                if exc.failure_class not in _RETRYABLE:
+                    logger.error(
+                        "Non-retryable stream error for %s:%s (%s) — not falling back",
+                        provider.provider_name, provider.model, exc.failure_class,
+                    )
+                    raise
+                logger.warning(
+                    "Stream error for %s:%s (%s), trying next provider",
+                    provider.provider_name, provider.model, exc.failure_class,
+                )
                 continue
 
         raise LLMError("No providers available for streaming", failure_class=FailureClass.LLM_ERROR)

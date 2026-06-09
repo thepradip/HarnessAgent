@@ -202,6 +202,16 @@ class TraceRecorder:
         if span_id in stack:
             stack.remove(span_id)
 
+        # When the run's stack is empty (root span finished) drop the key so
+        # _stacks does not grow unboundedly across many runs in a long-lived
+        # recorder. NOTE: the list-based parent stack is not safe for truly
+        # concurrent spans within one run — a fan-out of parallel spans can
+        # interleave push/pop and mis-attribute parents. Spans within a run are
+        # expected to be sequential; concurrent fan-out should use separate runs
+        # (a contextvar-based parent would be the fix if that changes).
+        if not stack:
+            self._stacks.pop(run_id, None)
+
         return span
 
     def set_llm_usage(

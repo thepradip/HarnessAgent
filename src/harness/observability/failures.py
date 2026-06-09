@@ -299,10 +299,12 @@ class FailureTracker:
                 ts_str = failure_data.get("timestamp", "")
                 try:
                     ts = datetime.fromisoformat(ts_str).timestamp()
-                    if ts < cutoff_ts:
-                        continue
                 except (ValueError, TypeError):
-                    pass
+                    # Unparseable timestamp: skip rather than counting the entry
+                    # in-window, which would inflate the windowed summary stats.
+                    continue
+                if ts < cutoff_ts:
+                    continue
 
                 at = failure_data.get("agent_type", "")
                 if agent_type and at != agent_type:

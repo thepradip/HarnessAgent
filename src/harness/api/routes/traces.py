@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from harness.api.deps import get_current_tenant, get_redis
 from harness.core.config import get_config
@@ -22,9 +22,26 @@ def _runner(redis):
     )
 
 
+def _get_recorder(request: Request):
+    """Return the shared TraceRecorder from app.state, creating one if needed.
+
+    The recorder owns its own Redis connection pool; reusing the single
+    lifespan-managed instance avoids leaking a pool (max 20 conns) per request.
+    The lazy fallback keeps lightweight/test apps that skip lifespan working.
+    """
+    recorder = getattr(request.app.state, "trace_recorder", None)
+    if recorder is None:
+        from harness.observability.trace_recorder import TraceRecorder
+        cfg = get_config()
+        recorder = TraceRecorder.create(redis_url=cfg.redis_url)
+        request.app.state.trace_recorder = recorder
+    return recorder
+
+
 @router.get("/{run_id}/trace")
 async def get_run_trace(
     run_id: str,
+    request: Request,
     tenant_id: str = Depends(get_current_tenant),
     redis: Any = Depends(get_redis),
 ) -> dict:
@@ -65,9 +82,6 @@ async def get_run_trace(
     ------
     404  Run has no recorded trace (trace_recorder not wired, or run too old).
     """
-    from harness.observability.trace_recorder import TraceRecorder
-    cfg = get_config()
-
     record = await _runner(redis).get_run(run_id)
     if record is None:
         raise HTTPException(
@@ -80,7 +94,7 @@ async def get_run_trace(
             detail="Access denied",
         )
 
-    recorder = TraceRecorder.create(redis_url=cfg.redis_url)
+    recorder = _get_recorder(request)
 
     trace = await recorder.get_trace(run_id)
     if trace is None:
@@ -96,6 +110,7 @@ async def get_run_trace(
 @router.get("/spans/{span_id}")
 async def get_span(
     span_id: str,
+    request: Request,
     tenant_id: str = Depends(get_current_tenant),
     redis: Any = Depends(get_redis),
 ) -> dict:
@@ -105,9 +120,7 @@ async def get_span(
     Raises 404 if the span is not found, has expired, or belongs to another
     tenant (404 on mismatch so span_ids cannot be enumerated cross-tenant).
     """
-    from harness.observability.trace_recorder import TraceRecorder
-    cfg = get_config()
-    recorder = TraceRecorder.create(redis_url=cfg.redis_url)
+    recorder = _get_recorder(request)
 
     span = await recorder.get_span(span_id)
     # Spans recorded without an AgentContext carry tenant_id="" — treat those

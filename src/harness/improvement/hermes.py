@@ -365,6 +365,20 @@ class HermesLoop:
             )
             await self._store_patch(patch)
 
+        elif score >= self.threshold:
+            # auto_apply=True and the patch meets the hard threshold, but it sits
+            # too close to the boundary to clear the regression-safety invariant
+            # (threshold <= score < threshold+0.15 and < 0.9). It is NOT a
+            # below-threshold rejection — queue it for manual review instead of
+            # mislabelling it "Score < threshold".
+            patch.status = "pending"
+            reason = (
+                f"Score {score:.3f} >= threshold {self.threshold:.3f} but within "
+                f"the regression-safety margin (needs >= {self.threshold + 0.15:.3f} "
+                f"or >= 0.900 to auto-apply) — queued for manual review."
+            )
+            await self._store_patch(patch)
+
         else:
             patch.status = "rejected"
             reason = (

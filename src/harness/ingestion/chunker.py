@@ -68,9 +68,11 @@ def _hard_split(
                     token_estimate=_estimate_tokens(content),
                 )
             )
-        start += chunk_size_chars - overlap_chars
-        if start <= 0:
-            break
+        # Clamp the step to at least 1 char so a pathological config
+        # (overlap_chars >= chunk_size_chars) cannot stall or, worse, discard
+        # the remainder of the text by stepping backwards.
+        step = max(1, chunk_size_chars - overlap_chars)
+        start += step
     return chunks
 
 

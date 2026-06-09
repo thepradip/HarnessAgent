@@ -96,9 +96,17 @@ class ErrorCollector:
         max_records: Maximum number of records to keep per agent_type index.
     """
 
-    def __init__(self, redis: Any, max_records: int = 10_000) -> None:
+    def __init__(
+        self,
+        redis: Any,
+        max_records: int = 10_000,
+        record_ttl_seconds: int = 86400 * 90,
+    ) -> None:
         self._redis = redis
         self._max_records = max_records
+        # TTL bounds the lifetime of any record key that slips past the index
+        # trim (e.g. under concurrent writes). 0/None disables the TTL.
+        self._record_ttl = record_ttl_seconds
 
     async def record(
         self,
@@ -134,11 +142,28 @@ class ErrorCollector:
         timestamp = rec.created_at.timestamp()
         index_key = f"{_ERROR_INDEX_KEY}:{agent_type}"
 
+        # Find the record ids that this insert will push out of the capped index
+        # so we can delete their record keys too — trimming only the index would
+        # orphan those keys forever (set() carried no TTL). The post-insert trim
+        # removes ranks [0, -(max+1)]; before the insert (one fewer element) the
+        # same victims are ranks [0, -max].
+        try:
+            stale_ids = await self._redis.zrange(index_key, 0, -self._max_records)
+        except Exception:
+            stale_ids = []
+
         async with self._redis.pipeline(transaction=True) as pipe:
-            pipe.set(_error_key(rec.record_id), rec.to_json())
+            if self._record_ttl and self._record_ttl > 0:
+                pipe.set(_error_key(rec.record_id), rec.to_json(), ex=self._record_ttl)
+            else:
+                pipe.set(_error_key(rec.record_id), rec.to_json())
             pipe.zadd(index_key, {rec.record_id: timestamp})
-            # Trim to max_records
+            # Trim the index to max_records and drop the evicted record keys.
             pipe.zremrangebyrank(index_key, 0, -(self._max_records + 1))
+            for rid_raw in stale_ids or []:
+                rid = rid_raw if isinstance(rid_raw, str) else rid_raw.decode()
+                if rid != rec.record_id:
+                    pipe.delete(_error_key(rid))
             await pipe.execute()
 
         logger.debug(

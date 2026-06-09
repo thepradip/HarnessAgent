@@ -72,11 +72,7 @@ class QdrantVectorStore:
             existing = await client.get_collections()
             names = [c.name for c in existing.collections]
             if self._collection_name not in names:
-                vector_size = (
-                    self._embedder.dimensions
-                    if self._embedder is not None
-                    else self._vector_size
-                )
+                vector_size = await self._embedding_dimensions()
                 await client.create_collection(
                     collection_name=self._collection_name,
                     vectors_config=VectorParams(
@@ -107,6 +103,28 @@ class QdrantVectorStore:
             )
         embeddings = await self._embedder.embed([text])
         return embeddings[0]
+
+    async def _embedding_dimensions(self) -> int:
+        """Resolve the embedding dimension when creating the collection.
+
+        Lazy embedders raise on ``.dimensions`` until they have embedded at
+        least once, so a query/upsert that has to create the collection before
+        any embed call would crash. Probe with a real embed first, then read
+        ``.dimensions``; fall back to the measured vector length or the
+        configured default.
+        """
+        if self._embedder is None:
+            return self._vector_size
+        try:
+            probe = await self._embedder.embed(["probe"])
+            dim = getattr(self._embedder, "dimensions", None)
+            if dim:
+                return int(dim)
+            if probe and probe[0]:
+                return len(probe[0])
+        except Exception as exc:
+            logger.debug("Embedder dimension probe failed: %s", exc)
+        return self._vector_size
 
     # ------------------------------------------------------------------
     # VectorStore protocol
@@ -243,6 +261,16 @@ class QdrantVectorStore:
                 f"Qdrant count error: {exc}",
                 failure_class=FailureClass.MEMORY_VECTOR,
             ) from exc
+
+    async def close(self) -> None:
+        """Close the underlying Qdrant async client."""
+        if self._client is not None:
+            try:
+                await self._client.close()
+            except Exception as exc:
+                logger.debug("Qdrant client close failed: %s", exc)
+            self._client = None
+            self._collection_ready = False
 
 
 # ---------------------------------------------------------------------------

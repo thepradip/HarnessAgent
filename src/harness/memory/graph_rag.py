@@ -13,6 +13,7 @@ Improvements over v1:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -185,7 +186,11 @@ class GraphRAGEngine:
         future retrievals smarter for similar questions.
         """
         now = datetime.now(timezone.utc).isoformat()
-        query_id = f"query:{run_id}:{hash(query_sql) % 10**8}"
+        # Stable across processes — builtin hash() is salted per-process
+        # (PYTHONHASHSEED), which would create duplicate Query nodes for the
+        # same SQL after a restart.
+        query_hash = hashlib.sha1(query_sql.encode("utf-8")).hexdigest()[:8]
+        query_id = f"query:{run_id}:{query_hash}"
 
         try:
             # Add Query node

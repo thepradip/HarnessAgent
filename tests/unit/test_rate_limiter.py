@@ -83,3 +83,57 @@ async def test_returns_retry_after_when_blocked(rate_limiter):
     assert result.allowed is False
     assert isinstance(result.retry_after, float)
     assert 0.0 < result.retry_after <= 60.0
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the deny-path rollback fix (item 4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_denied_rollback_does_not_drop_concurrent_entry(redis_client):
+    """A denied request must roll back ONLY its own entry, not a neighbour's.
+
+    Regression: the old code used zremrangebyscore(now, now+0.001) which could
+    erase a concurrent entry that landed at the same timestamp.
+    """
+    rl = RateLimiter(redis_client=redis_client, default_rpm=2, window_seconds=60)
+
+    r1 = await rl.check(tenant_id="t-roll", resource="api")
+    r2 = await rl.check(tenant_id="t-roll", resource="api")
+    assert r1.allowed and r2.allowed
+
+    key = rl._key("t-roll", "api")
+    assert await redis_client.zcard(key) == 2
+
+    denied = await rl.check(tenant_id="t-roll", resource="api")
+    assert denied.allowed is False
+
+    assert await redis_client.zcard(key) == 2, "rollback erased a recorded entry"
+
+
+@pytest.mark.asyncio
+async def test_unique_members_no_collision_same_timestamp(redis_client, monkeypatch):
+    """Two requests at the same time.time() must produce distinct members.
+
+    Regression: id(object()) of a freed temp object could collide, so the
+    second zadd would overwrite the first entry.
+    """
+    import harness.core.rate_limiter as rl_mod
+
+    rl = RateLimiter(redis_client=redis_client, default_rpm=10, window_seconds=60)
+    monkeypatch.setattr(rl_mod.time, "time", lambda: 1000.0)
+
+    await rl.check(tenant_id="t-uniq", resource="api")
+    await rl.check(tenant_id="t-uniq", resource="api")
+
+    key = rl._key("t-uniq", "api")
+    assert await redis_client.zcard(key) == 2, "same-timestamp members collided"
+
+
+@pytest.mark.asyncio
+async def test_explicit_zero_limit_denies(redis_client):
+    """An explicit limit=0 must deny, not fall back to default_rpm."""
+    rl = RateLimiter(redis_client=redis_client, default_rpm=60, window_seconds=60)
+    result = await rl.check(tenant_id="t-zero", resource="api", limit=0)
+    assert result.allowed is False

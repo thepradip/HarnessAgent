@@ -14,7 +14,6 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _POLICY_KEY_PREFIX = "harness:policy:"
-_POLICY_TTL = 86400 * 30  # 30 days
 
 
 @dataclass
@@ -82,8 +81,10 @@ _DEFAULT_POLICY_TEMPLATE: dict[str, Any] = {
 class PolicyStore:
     """Redis-backed store for per-tenant HarnessPolicy objects.
 
-    Policies are stored as JSON at ``harness:policy:{tenant_id}`` with a 30-day TTL.
-    A missing policy returns the default policy for that tenant.
+    Policies are stored as JSON at ``harness:policy:{tenant_id}`` with no TTL —
+    a tenant's restrictions (blocked_tools / HITL requirements) must never
+    silently expire into the permissive default. A missing policy returns the
+    default policy for that tenant.
     """
 
     def __init__(self, redis: Any) -> None:
@@ -122,10 +123,11 @@ class PolicyStore:
         """Store a policy, overwriting any existing policy for that tenant."""
         try:
             serialized = json.dumps(policy.to_dict(), default=str)
+            # No TTL: policy records (blocked_tools / HITL) must persist until
+            # explicitly changed or deleted — never expire into the default.
             await self._redis.set(
                 self._key(policy.tenant_id),
                 serialized,
-                ex=_POLICY_TTL,
             )
             logger.info("Stored policy for tenant '%s'", policy.tenant_id)
         except Exception as exc:

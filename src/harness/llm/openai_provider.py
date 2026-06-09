@@ -144,6 +144,13 @@ class OpenAIProvider:
             request["tools"] = [self._to_openai_tool(t) for t in tools]
             request["tool_choice"] = "auto"
 
+        # Forward extra kwargs (stop, top_p, frequency_penalty, …) the router
+        # passes through, without clobbering keys we set deliberately.
+        for k, v in kwargs.items():
+            if k in ("model", "messages", "max_tokens", "max_completion_tokens"):
+                continue
+            request.setdefault(k, v)
+
         self._ensure_client()
         RateLimitError = self._exc_rate_limit
         APITimeoutError = self._exc_timeout
@@ -221,7 +228,15 @@ class OpenAIProvider:
                     delta = chunk.choices[0].delta if chunk.choices else None
                     if delta and delta.content:
                         yield delta.content
-        except (RateLimitError, APITimeoutError, APIConnectionError, APIStatusError) as exc:
+        except RateLimitError as exc:
+            raise LLMError(str(exc), failure_class=FailureClass.LLM_RATE_LIMIT) from exc
+        except APITimeoutError as exc:
+            raise LLMError(str(exc), failure_class=FailureClass.LLM_TIMEOUT) from exc
+        except APIConnectionError as exc:
+            raise LLMError(str(exc), failure_class=FailureClass.LLM_ERROR) from exc
+        except APIStatusError as exc:
+            if exc.status_code == 429:
+                raise LLMError(str(exc), failure_class=FailureClass.LLM_RATE_LIMIT) from exc
             raise LLMError(str(exc), failure_class=FailureClass.LLM_ERROR) from exc
 
     async def health_check(self) -> bool:
@@ -388,16 +403,17 @@ class AzureOpenAIProvider(OpenAIProvider):
         )
 
     async def health_check(self) -> bool:
-        """Azure health check — minimal completion with the correct token parameter."""
+        """Azure health check — cheap, non-billable reachability probe.
+
+        Lists deployments/models instead of issuing a billable chat completion.
+        A rate-limit response still means the endpoint is up. If the deployment
+        listing endpoint is unavailable, any non-auth error is treated as
+        "reachable" so the router doesn't false-negative a live endpoint.
+        """
         try:
-            await self._client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "developer", "content": "You are a health check assistant."},
-                    {"role": "user", "content": "Reply with the word OK."},
-                ],
-                max_completion_tokens=5,
-            )
+            await self._client.models.list()
             return True
+        except self._exc_rate_limit:
+            return True  # rate-limited but the endpoint is up
         except Exception:
             return False

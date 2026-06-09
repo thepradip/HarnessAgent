@@ -451,11 +451,13 @@ def test_advantage_estimator_empty_episode():
 
 
 def test_advantage_estimator_normalised_mean_near_zero():
+    # The per-episode z-score (norm_advantage) re-centres to ~0 mean; the raw
+    # advantage (advantage) does NOT — that's exactly why split() uses raw.
     est = AdvantageEstimator(gamma=1.0)
     ep = _episode([0.9, 0.1, 0.8, 0.2, 0.6])
     adv = est.compute(ep, baseline=0.5)
-    mean_a = sum(a.advantage for a in adv) / len(adv)
-    assert abs(mean_a) < 0.1
+    mean_norm = sum(a.norm_advantage for a in adv) / len(adv)
+    assert abs(mean_norm) < 0.1
 
 
 def test_advantage_estimator_high_reward_positive_advantage():
@@ -478,12 +480,13 @@ def test_advantage_estimator_discounted_return():
     assert adv[0].discounted_return < adv[1].discounted_return
 
 
-def test_advantage_estimator_weight_is_abs_advantage():
+def test_advantage_estimator_weight_is_abs_norm_advantage():
+    # weight is the gradient-scaling magnitude == |z-normalised advantage|.
     est = AdvantageEstimator()
     ep = _episode([0.9, 0.1, 0.5])
     adv = est.compute(ep, baseline=0.5)
     for a in adv:
-        assert a.weight == pytest.approx(abs(a.advantage), abs=1e-6)
+        assert a.weight == pytest.approx(abs(a.norm_advantage), abs=1e-6)
 
 
 def test_advantage_estimator_split_thresholds():
@@ -501,6 +504,24 @@ def test_advantage_estimator_split_no_positives():
     adv = est.compute(ep, baseline=0.9)
     pos, neg = est.split(adv, pos_threshold=10.0)
     assert pos == []
+
+
+def test_advantage_split_baseline_has_effect_uniform_good_episode():
+    # Regression for the baseline-cancellation bug: a uniformly-good episode
+    # (every step well above the rolling baseline) must reinforce ALL steps and
+    # patch NONE. With the old z-normalised signal the zero-mean centring split
+    # it ~half/half regardless of the baseline.
+    est = AdvantageEstimator(gamma=0.0)  # per-step return G[t] = r[t]
+    ep = _episode([0.9, 0.95, 0.92])
+    adv = est.compute(ep, baseline=0.2)
+    pos, neg = est.split(adv, pos_threshold=0.1, neg_threshold=-0.1)
+    assert len(neg) == 0
+    assert len(pos) == len(adv)
+    # Raising the baseline above the rewards flips them all negative.
+    adv_high = est.compute(ep, baseline=1.5)
+    pos2, neg2 = est.split(adv_high, pos_threshold=0.1, neg_threshold=-0.1)
+    assert len(pos2) == 0
+    assert len(neg2) == len(adv_high)
 
 
 def test_advantage_estimator_single_step():
@@ -985,6 +1006,33 @@ async def test_rlvr_loop_no_feedback_channel():
     )
     vr = _make_vr()
     await loop.publish_step_feedback("run_x", vr)   # must not raise
+
+
+@pytest.mark.asyncio
+async def test_rlvr_loop_idempotent_on_same_run_id(rlvr_loop):
+    # Re-delivering the same 'completed' event must not run a second cycle.
+    for i in range(4):
+        await rlvr_loop._buffer.record(_make_step("run_idem", step=i, reward=0.9))
+    first = await rlvr_loop.process_episode("run_idem", "sql")
+    assert first is not None
+    second = await rlvr_loop.process_episode("run_idem", "sql")
+    assert second is None
+    # Episode buffer was dropped after the first cycle.
+    assert await rlvr_loop._buffer.get_episode("run_idem") == []
+
+
+@pytest.mark.asyncio
+async def test_rlvr_loop_dedups_fewshots_across_episodes(rlvr_loop):
+    # The same winning (task, action) recorded in two different runs must be
+    # stored as a few-shot only once (no unbounded duplicate appends).
+    for run_id in ("dedup_a", "dedup_b"):
+        for i in range(4):
+            await rlvr_loop._buffer.record(
+                _make_step(run_id, step=i, reward=0.95)  # all high → all positive
+            )
+        await rlvr_loop.process_episode(run_id, "sql")
+    # Only one unique (task, action) fingerprint stored despite two episodes.
+    assert len(rlvr_loop._fewshot_hashes["sql"]) == 1
 
 
 @pytest.mark.asyncio

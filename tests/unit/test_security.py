@@ -293,6 +293,21 @@ def test_mask_short_value():
     assert mask("abc") == "[MASKED]"
 
 
+def test_mask_medium_value_fully_masked():
+    """A 13-char secret must NOT reveal 12/13 chars — fully masked under 20."""
+    val = "abcdefghijklm"  # 13 chars
+    masked = mask(val)
+    assert masked == "[MASKED]"
+    assert "abcdefgh" not in masked
+
+
+def test_mask_only_reveals_at_20_plus():
+    short = "a" * 19
+    long = "a" * 20
+    assert mask(short) == "[MASKED]"
+    assert mask(long).startswith("aaaaaaaa") and mask(long).endswith("aaaa")
+
+
 def test_mask_empty():
     assert mask("") == "[EMPTY]"
 
@@ -331,6 +346,18 @@ def test_scanner_detects_openai_key():
     text = f"sk-{'a' * 48} is my key"
     matches = scan(text)
     assert any(m.pattern_name == "openai" for m in matches)
+
+
+def test_scanner_detects_openai_project_key():
+    """Modern sk-proj-/sk-svcacct- keys (contain -/_) must be detected + redacted."""
+    proj_key = "sk-proj-" + "aB3-_dEf" * 8  # 64 chars after prefix
+    svc_key = "sk-svcacct-" + "Xy9_zQ12" * 6
+    for key in (proj_key, svc_key):
+        matches = scan(f"my key {key} ok")
+        assert any(m.pattern_name == "openai" for m in matches), key
+        red = redact(f"my key {key} ok")
+        assert key not in red
+        assert "[OPENAI_KEY REDACTED]" in red
 
 
 def test_scanner_detects_github_pat():

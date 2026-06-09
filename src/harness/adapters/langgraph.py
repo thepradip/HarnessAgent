@@ -50,6 +50,10 @@ class LangGraphAdapter(FrameworkAdapter):
         event_bus: "EventBus | None" = None,
         step_tracer: "StepTracer | None" = None,
     ) -> None:
+        # Initialise base adapter state (_safety_pipeline, _cost_tracker,
+        # _mcp_clients, _safety_fail_open). Without this, run_with_harness and
+        # attach_* only work by accident via getattr/hasattr fallbacks.
+        super().__init__()
         self._graph = graph
         self._event_bus = event_bus
         self._step_tracer = step_tracer

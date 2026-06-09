@@ -106,3 +106,92 @@ async def test_circuit_breaker_opens_after_failures():
     # Circuit should now be open — either CircuitOpenError or LLMError (no providers left)
     with pytest.raises((CircuitOpenError, LLMError)):
         await router.complete([{"role": "user", "content": "Hi"}], max_tokens=100)
+
+
+# ---------------------------------------------------------------------------
+# Regression: stream() must not fall back / re-emit after partial output,
+# and must re-raise non-retryable errors instead of silently restarting.
+# ---------------------------------------------------------------------------
+
+def _make_stream_provider(name, model, *, tokens=None, raise_after=None,
+                          exc=None, healthy=True):
+    """Provider whose .stream yields `tokens`, optionally raising `exc`
+    after `raise_after` tokens have been yielded."""
+    p = AsyncMock()
+    p.provider_name = name
+    p.model = model
+    p.health_check = AsyncMock(return_value=healthy)
+
+    async def _stream(messages, **kwargs):
+        yielded = 0
+        for t in (tokens or []):
+            if raise_after is not None and yielded == raise_after and exc is not None:
+                raise exc
+            yield t
+            yielded += 1
+        if raise_after is not None and yielded == raise_after and exc is not None:
+            raise exc
+
+    p.stream = _stream
+    return p
+
+
+@pytest.mark.asyncio
+async def test_stream_no_double_yield_after_partial_failure():
+    """If a provider fails AFTER yielding tokens, the router must not fall back
+    to the next provider (which would duplicate/garble the output) — it re-raises."""
+    p1 = _make_stream_provider(
+        "primary", "m1",
+        tokens=["Hello", " world"],
+        raise_after=2,
+        exc=LLMError("boom mid-stream", failure_class=FailureClass.LLM_ERROR),
+    )
+    p2 = _make_stream_provider("fallback", "m2", tokens=["SHOULD", "NOT", "APPEAR"])
+    router = LLMRouter()
+    router.register(p1, priority=0)
+    router.register(p2, priority=1)
+
+    collected = []
+    with pytest.raises(LLMError):
+        async for tok in router.stream([{"role": "user", "content": "hi"}]):
+            collected.append(tok)
+
+    # Only the primary's tokens were yielded; no fallback content leaked in.
+    assert collected == ["Hello", " world"]
+    assert "SHOULD" not in collected
+
+
+@pytest.mark.asyncio
+async def test_stream_falls_back_before_any_output():
+    """A retryable failure BEFORE any token is yielded still falls back cleanly."""
+    p1 = _make_stream_provider(
+        "primary", "m1", tokens=[], raise_after=0,
+        exc=LLMError("429", failure_class=FailureClass.LLM_RATE_LIMIT),
+    )
+    p2 = _make_stream_provider("fallback", "m2", tokens=["ok", "!"])
+    router = LLMRouter()
+    router.register(p1, priority=0)
+    router.register(p2, priority=1)
+
+    collected = [tok async for tok in router.stream([{"role": "user", "content": "hi"}])]
+    assert collected == ["ok", "!"]
+
+
+@pytest.mark.asyncio
+async def test_stream_reraises_non_retryable_before_output():
+    """A non-retryable failure (e.g. context limit) must NOT fall back — re-raised."""
+    p1 = _make_stream_provider(
+        "primary", "m1", tokens=[], raise_after=0,
+        exc=LLMError("ctx too large", failure_class=FailureClass.LLM_CONTEXT_LIMIT),
+    )
+    p2 = _make_stream_provider("fallback", "m2", tokens=["should", "not", "run"])
+    router = LLMRouter()
+    router.register(p1, priority=0)
+    router.register(p2, priority=1)
+
+    collected = []
+    with pytest.raises(LLMError) as ei:
+        async for tok in router.stream([{"role": "user", "content": "hi"}]):
+            collected.append(tok)
+    assert ei.value.failure_class == FailureClass.LLM_CONTEXT_LIMIT
+    assert collected == []

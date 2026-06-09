@@ -179,11 +179,6 @@ class NexusSqlAgent(SQLAgent):
 # NexusSql — standalone callable (for BIRD benchmark)
 # ---------------------------------------------------------------------------
 
-_SQL_EXTRACT_RE = re.compile(
-    r"```sql\s*(.*?)\s*```|```\s*(.*?)\s*```|SELECT\b.+",
-    re.IGNORECASE | re.DOTALL,
-)
-
 _GENERATE_PROMPT = """\
 You are NexusSql, a precise SQL generation engine.
 Generate a single SQLite SELECT query that answers the question.
@@ -400,7 +395,12 @@ class NexusSql:
             return sql, 1.0, ""
         try:
             from harness.eval.sandbox import SQLSandbox
+            # Build a sandbox for this db and inject it into the verifier so the
+            # execution and gold-result checks actually run the SQL. Without this
+            # the verifier scores SQL it never executes (silent no-op).
             sandbox = SQLSandbox(db_path=db_path) if db_path else None
+            if sandbox is not None and getattr(self._verifier, "_sandbox", None) is None:
+                self._verifier._sandbox = sandbox
             vr = await self._verifier.verify(
                 task=question,
                 action=sql,
@@ -451,9 +451,19 @@ class NexusSql:
         agent = cls(llm_provider=llm, schema_store=store, verifier=verifier)
 
         if db_path:
-            asyncio.get_event_loop().run_until_complete(
-                store.store_from_sqlite(_db_id(db_path), db_path)
-            )
+            # Index the schema synchronously. asyncio.get_event_loop()
+            # .run_until_complete() is deprecated and raises inside a running
+            # loop; asyncio.run() is the safe pattern when no loop is running.
+            coro = store.store_from_sqlite(_db_id(db_path), db_path)
+            try:
+                asyncio.run(coro)
+            except RuntimeError:
+                # Already inside a running loop — run the coroutine in a
+                # dedicated loop on a worker thread to avoid re-entrancy.
+                import concurrent.futures
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    pool.submit(asyncio.run, coro).result()
 
         return agent
 

@@ -121,13 +121,21 @@ class EvalReport:
         delta_cost = self.avg_cost_usd - other.avg_cost_usd
         delta_latency = self.avg_latency_seconds - other.avg_latency_seconds
 
-        def fmt_delta(v: float, unit: str = "", higher_is_better: bool = True) -> str:
+        def fmt_delta(
+            v: float,
+            unit: str = "",
+            higher_is_better: bool = True,
+            percent: bool = False,
+        ) -> str:
             sign = "+" if v >= 0 else ""
             direction = ""
             if v > 0:
                 direction = " (better)" if higher_is_better else " (worse)"
             elif v < 0:
                 direction = " (worse)" if higher_is_better else " (better)"
+            if percent:
+                # v is a fraction (e.g. 0.05) — render as a percentage point delta.
+                return f"{sign}{v * 100:.1f}{unit or '%'}{direction}"
             return f"{sign}{v:.4f}{unit}{direction}"
 
         lines = [
@@ -135,7 +143,7 @@ class EvalReport:
             "",
             "| Metric | Baseline | New | Delta |",
             "|--------|----------|-----|-------|",
-            f"| Success rate | {other.success_rate:.1%} | {self.success_rate:.1%} | {fmt_delta(delta_sr, '%', True)} |",
+            f"| Success rate | {other.success_rate:.1%} | {self.success_rate:.1%} | {fmt_delta(delta_sr, '%', True, percent=True)} |",
             f"| Avg steps | {other.avg_steps:.1f} | {self.avg_steps:.1f} | {fmt_delta(delta_steps, '', False)} |",
             f"| Avg tokens | {other.avg_tokens:.0f} | {self.avg_tokens:.0f} | {fmt_delta(delta_tokens, '', False)} |",
             f"| Avg cost (USD) | ${other.avg_cost_usd:.4f} | ${self.avg_cost_usd:.4f} | {fmt_delta(delta_cost, '', False)} |",

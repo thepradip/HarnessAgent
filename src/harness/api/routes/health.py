@@ -34,10 +34,12 @@ async def _check_vector_db() -> bool:
     try:
         cfg = get_config()
         if cfg.vector_backend == "chroma":
-            import httpx
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                resp = await client.get(f"http://localhost:8000/api/v1/heartbeat")
-                return resp.status_code == 200
+            # We use embedded Chroma (a local persistent path), not a server,
+            # so probing http://localhost:8000 would always report degraded.
+            # Healthy = the configured persistence directory is present/creatable.
+            import os
+            path = cfg.chroma_path
+            return os.path.isdir(path) or os.path.isdir(os.path.dirname(path) or ".")
         elif cfg.vector_backend == "qdrant":
             import httpx
             async with httpx.AsyncClient(timeout=3.0) as client:
@@ -64,17 +66,18 @@ async def _check_graph_db() -> bool:
         return False
 
 
-async def _check_llm() -> bool:
-    """Return True if the default LLM provider is reachable (best-effort)."""
+def _check_llm() -> bool:
+    """Return True if an LLM provider is configured.
+
+    NOTE: ``/health`` is unauthenticated, so we deliberately do NOT make a live
+    call to api.anthropic.com here — that would let any anonymous caller drive
+    external traffic (and metered cost) by hammering the health endpoint. We
+    only check that a key is configured; reachability is verified lazily on the
+    first real LLM call (and surfaced via circuit-breaker metrics).
+    """
     try:
         cfg = get_config()
-        import httpx
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                "https://api.anthropic.com/v1/models",
-                headers={"x-api-key": cfg.anthropic_api_key, "anthropic-version": "2023-06-01"},
-            )
-            return resp.status_code in (200, 401)  # 401 = auth issue but API reachable
+        return bool(getattr(cfg, "anthropic_api_key", "") or getattr(cfg, "openai_api_key", ""))
     except Exception:
         return False
 
@@ -90,7 +93,7 @@ async def health(request: Request) -> JSONResponse:
     redis_ok = await _check_redis(request)
     vector_ok = await _check_vector_db()
     graph_ok = await _check_graph_db()
-    llm_ok = await _check_llm()
+    llm_ok = _check_llm()
 
     services = {
         "redis": redis_ok,

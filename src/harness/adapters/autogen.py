@@ -102,10 +102,18 @@ class AutoGenAdapter(FrameworkAdapter):
             self._messages.append(
                 {"role": sender_name, "content": str(message)}
             )
+            # Enforce the harness budget LIVE: ctx.tick() raises BudgetExceeded
+            # once a limit is crossed, which propagates out of initiate_chat()
+            # (run in the executor) and aborts the conversation instead of
+            # spending to completion and only checking during replay.
+            ctx.tick()
             return original_receive(message, sender, request_reply, silent)
 
         self._recipient.receive = _capturing_receive
 
+        from harness.core.errors import BudgetExceeded
+
+        budget_aborted = False
         try:
             loop = asyncio.get_running_loop()
             self._chat_result = await loop.run_in_executor(
@@ -116,9 +124,30 @@ class AutoGenAdapter(FrameworkAdapter):
                     max_turns=self._max_turns,
                 ),
             )
+        except BudgetExceeded as exc:
+            logger.warning("AutoGen chat aborted by budget limit: %s", exc)
+            budget_aborted = True
         finally:
             # Always restore the original method.
             self._recipient.receive = original_receive
+
+        if budget_aborted:
+            from harness.core.context import StepEvent
+
+            budget_event = StepEvent(
+                run_id=ctx.run_id,
+                step=ctx.step_count,
+                event_type="budget_exceeded",
+                payload={
+                    "framework": self.framework_name,
+                    "step_count": ctx.step_count,
+                    "max_steps": ctx.max_steps,
+                },
+                timestamp=_utcnow(),
+            )
+            await self._publish(budget_event)
+            yield budget_event
+            return
 
         # --- Yield StepEvents for all captured messages ---
         for i, msg in enumerate(self._messages):

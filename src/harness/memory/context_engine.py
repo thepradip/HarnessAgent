@@ -23,9 +23,11 @@ Sub-agents  : a parent can slice its context (relevant cold pages +
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -50,6 +52,7 @@ _PAGE_TOKEN_TARGET = 2_000        # target tokens per offloaded page
 _PAGE_TTL = 86_400                # 24 h TTL for cold pages
 _ACTIONS_TTL = 86_400             # 24 h TTL for action logs
 _HOT_MAX_MSGS = 200               # message count that triggers offload check
+_HOT_TTL = 86_400                 # 24 h TTL for hot windows (prevent unbounded growth)
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
@@ -175,6 +178,9 @@ class ContextEngine:
         self._reserve = reserve_output
         self._threshold = offload_threshold
         self._cold_k = cold_pages_per_query
+        # Serialize offloads per hot-key so concurrent pushes can't double-trim
+        # or duplicate pages.
+        self._offload_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     # ── Connection ────────────────────────────────────────────────────────────
 
@@ -218,7 +224,9 @@ class ContextEngine:
             "step": step,
             "ts": datetime.now(timezone.utc).isoformat(),
         })
-        await r.lpush(self._hot_key(run_id, skill_ns), raw)
+        hot_key = self._hot_key(run_id, skill_ns)
+        await r.lpush(hot_key, raw)
+        await r.expire(hot_key, _HOT_TTL)
         await self._maybe_offload(run_id, skill_ns)
 
     # ── Build context ─────────────────────────────────────────────────────────
@@ -435,7 +443,11 @@ class ContextEngine:
 
         r = await self._redis()
         child_key = self._hot_key(child_run_id, skill_ns)
-        for msg in injected:
+        # `injected` is chronological (oldest → newest), but hot lists are
+        # newest-first (LPUSH convention; _load_hot reverses on read). RPUSH in
+        # reversed order so index 0 ends up newest and the child sees the
+        # pre-loaded context in correct chronological order end-to-end.
+        for msg in reversed(injected):
             await r.rpush(child_key, json.dumps({
                 "role": msg.role,
                 "content": msg.content,
@@ -445,6 +457,8 @@ class ContextEngine:
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "_from_parent": parent_run_id,
             }))
+        if injected:
+            await r.expire(child_key, _HOT_TTL)
 
         return SubAgentSlice(
             parent_run_id=parent_run_id,
@@ -468,8 +482,9 @@ class ContextEngine:
         """
         tokens = estimate_tokens(result_summary)
         r = await self._redis()
+        parent_key = self._hot_key(parent_run_id, skill_ns)
         await r.lpush(
-            self._hot_key(parent_run_id, skill_ns),
+            parent_key,
             json.dumps({
                 "role": "tool",
                 "content": f"[SubAgent:{child_run_id[:8]}] {result_summary}",
@@ -480,42 +495,72 @@ class ContextEngine:
                 "_from_child": child_run_id,
             })
         )
+        await r.expire(parent_key, _HOT_TTL)
 
     # ── Offload internals ─────────────────────────────────────────────────────
 
     async def _maybe_offload(self, run_id: str, skill_ns: str) -> None:
-        """Evict the oldest page of messages when the hot window is over threshold."""
+        """Evict the oldest page of messages when the hot window is over threshold.
+
+        Serialized per hot-key by an asyncio.Lock and trimmed relative to the
+        TAIL of the list, so concurrent LPUSHes that occur during the offload
+        cannot shift the indices we trim (which would otherwise silently delete
+        non-offloaded messages or duplicate pages).
+        """
         r = await self._redis()
         hot_key = self._hot_key(run_id, skill_ns)
 
-        count = await r.llen(hot_key)
-        if count < _HOT_MAX_MSGS:
+        # Cheap pre-check outside the lock to avoid contention on the common path.
+        if await r.llen(hot_key) < _HOT_MAX_MSGS:
             return
 
-        # Full token scan (only runs when near threshold)
-        all_raw: list[str] = await r.lrange(hot_key, 0, -1)
-        hot_tokens = _total_tokens(all_raw)
+        async with self._offload_locks[hot_key]:
+            # Re-read inside the lock: another offload (or pushes) may have run.
+            count = await r.llen(hot_key)
+            if count < _HOT_MAX_MSGS:
+                return
 
-        if hot_tokens < self._max_hot * self._threshold:
-            return
+            # Full token scan (only runs when near threshold)
+            all_raw: list[str] = await r.lrange(hot_key, 0, -1)
+            hot_tokens = _total_tokens(all_raw)
 
-        # Identify oldest messages to offload (tail of the list = lowest indices in reverse)
-        # LPUSH → index 0 = newest, index -1 = oldest
-        to_offload_raw: list[str] = []
-        offload_tokens = 0
-        # Walk from the end (oldest) inward
-        for raw in reversed(all_raw):
-            d = json.loads(raw)
-            t = d.get("tokens", estimate_tokens(d.get("content", "")))
-            to_offload_raw.append(raw)
-            offload_tokens += t
-            if offload_tokens >= _PAGE_TOKEN_TARGET:
-                break
+            if hot_tokens < self._max_hot * self._threshold:
+                return
 
-        if not to_offload_raw:
-            return
+            # Identify oldest messages to offload (tail of the list).
+            # LPUSH → index 0 = newest, index -1 = oldest.
+            to_offload_raw: list[str] = []
+            offload_tokens = 0
+            # Walk from the end (oldest) inward.
+            for raw in reversed(all_raw):
+                d = json.loads(raw)
+                t = d.get("tokens", estimate_tokens(d.get("content", "")))
+                to_offload_raw.append(raw)
+                offload_tokens += t
+                if offload_tokens >= _PAGE_TOKEN_TARGET:
+                    break
 
-        to_offload_raw.reverse()   # chronological order
+            if not to_offload_raw:
+                return
+
+            to_offload_raw.reverse()   # chronological order
+            await self._offload_page(
+                r, hot_key, run_id, skill_ns, to_offload_raw, offload_tokens
+            )
+
+    async def _offload_page(
+        self,
+        r: aioredis.Redis,
+        hot_key: str,
+        run_id: str,
+        skill_ns: str,
+        to_offload_raw: list[str],
+        offload_tokens: int,
+    ) -> None:
+        """Compress + embed + store a page, then trim the offloaded tail entries.
+
+        Must be called while holding the per-key offload lock.
+        """
         msgs = _raw_to_msgs(to_offload_raw)
 
         # Compress
@@ -530,7 +575,7 @@ class ContextEngine:
                 logger.debug("Page embedding failed: %s", exc)
 
         # Build page
-        steps = [json.loads(r).get("step", 0) for r in to_offload_raw]
+        steps = [json.loads(raw).get("step", 0) for raw in to_offload_raw]
         page = ContextPage(
             page_id=uuid.uuid4().hex,
             run_id=run_id,
@@ -566,12 +611,15 @@ class ContextEngine:
             except Exception as exc:
                 logger.debug("Vector page upsert failed: %s", exc)
 
-        # Trim hot list: remove offloaded entries from the tail
-        keep = len(all_raw) - len(to_offload_raw)
-        if keep > 0:
-            await r.ltrim(hot_key, 0, keep - 1)
-        else:
-            await r.delete(hot_key)
+        # Trim hot list relative to the TAIL: the offloaded entries are the
+        # oldest `n` items (tail). Trimming with a negative stop index keeps the
+        # newest `len - n` items even if other coroutines LPUSHed new (newest)
+        # messages while this offload was in flight — those new items stay at
+        # the head and are never dropped.
+        n = len(to_offload_raw)
+        # LTRIM key 0 -(n+1) keeps indices [0 .. -(n+1)], i.e. drops the last n.
+        await r.ltrim(hot_key, 0, -(n + 1))
+        await r.expire(hot_key, _HOT_TTL)
 
         logger.debug(
             "Offloaded page %s: %d msgs / %d tokens (steps %d–%d) [%s/%s]",

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,7 +17,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _CHECKPOINT_FILENAME = "checkpoint.json"
-_CHECKPOINT_TMP_SUFFIX = ".tmp"
+# NOTE: do NOT use a ``*.tmp`` suffix here — workspace cleanup(keep_artifacts=True)
+# deletes *.tmp files and could clobber an in-flight checkpoint. ``.swap`` is
+# outside the cleaned patterns.
+_CHECKPOINT_TMP_SUFFIX = ".swap"
 
 
 @dataclass
@@ -132,18 +137,31 @@ class CheckpointManager:
         )
 
         checkpoint_path = checkpoint_dir / _CHECKPOINT_FILENAME
-        tmp_path = checkpoint_path.with_suffix(_CHECKPOINT_TMP_SUFFIX)
 
+        # Crash-safe atomic write:
+        #   1. Write to a UNIQUE temp file in the same dir (mkstemp avoids the
+        #      fixed-name race between concurrent saves).
+        #   2. flush() + os.fsync() so the bytes hit disk before the rename.
+        #   3. os.replace() (atomic on POSIX) to swap in the new checkpoint.
+        # The temp suffix is ``.swap`` so workspace cleanup's *.tmp pattern can't
+        # delete an in-flight checkpoint.
+        serialized = json.dumps(data.to_dict(), indent=2, default=str)
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(checkpoint_dir),
+            prefix=f"{_CHECKPOINT_FILENAME}.",
+            suffix=_CHECKPOINT_TMP_SUFFIX,
+        )
         try:
-            serialized = json.dumps(data.to_dict(), indent=2, default=str)
-            tmp_path.write_text(serialized, encoding="utf-8")
-            # Atomic rename
-            tmp_path.rename(checkpoint_path)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(serialized)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_name, checkpoint_path)
             logger.debug("Checkpoint saved: %s", checkpoint_path)
         except Exception as exc:
-            # Clean up tmp file if rename failed
+            # Clean up tmp file if the write/replace failed.
             try:
-                tmp_path.unlink(missing_ok=True)
+                os.unlink(tmp_name)
             except OSError:
                 pass
             raise RuntimeError(f"Checkpoint save failed: {exc}") from exc

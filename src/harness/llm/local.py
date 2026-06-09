@@ -112,6 +112,9 @@ class OpenAICompatProvider:
 
         result: list[dict[str, Any]] = []
         system_prepended = False
+        # In-message system content collected when the model lacks a system role;
+        # folded into the user-turn prepend below instead of a system message.
+        folded_system: list[str] = []
 
         if effective_system and self._capabilities.supports_system_prompt:
             result.append({"role": "system", "content": effective_system})
@@ -120,7 +123,13 @@ class OpenAICompatProvider:
         for msg in messages:
             role = msg.get("role", "user")
             if role == "system":
-                if not system_prepended:
+                if not self._capabilities.supports_system_prompt:
+                    # Model has no system role — fold this content into the
+                    # user-turn prepend rather than injecting a system message.
+                    content = str(msg.get("content", ""))
+                    if content:
+                        folded_system.append(content)
+                elif not system_prepended:
                     result.insert(0, {"role": "system", "content": msg.get("content", "")})
                     system_prepended = True
                 continue
@@ -137,10 +146,18 @@ class OpenAICompatProvider:
                 continue
             result.append({"role": role, "content": msg.get("content", "")})
 
-        # Prepend system as first user turn if model doesn't support system role
-        if effective_system and not self._capabilities.supports_system_prompt:
-            result.insert(0, {"role": "user", "content": effective_system})
-            result.insert(1, {"role": "assistant", "content": "Understood."})
+        # Prepend system content as a leading user turn when the model lacks a
+        # system role — combine the explicit/effective system with any in-message
+        # system content folded in above.
+        if not self._capabilities.supports_system_prompt:
+            parts: list[str] = []
+            if effective_system:
+                parts.append(effective_system)
+            parts.extend(folded_system)
+            if parts:
+                prepend = "\n\n".join(parts)
+                result.insert(0, {"role": "user", "content": prepend})
+                result.insert(1, {"role": "assistant", "content": "Understood."})
 
         return result
 
@@ -249,9 +266,29 @@ class OpenAICompatProvider:
                     delta = chunk.choices[0].delta.content if chunk.choices else None
                     if delta:
                         yield delta
-        except (APIConnectionError, APITimeoutError, APIStatusError) as exc:
+        except OpenAIRateLimitError as exc:
             raise LLMError(
-                f"Streaming error from {self._base_url}: {exc}",
+                f"Rate limit from {self._base_url} during stream: {exc}",
+                failure_class=FailureClass.LLM_RATE_LIMIT,
+            ) from exc
+        except APITimeoutError as exc:
+            raise LLMError(
+                f"Timeout from {self._base_url} during stream: {exc}",
+                failure_class=FailureClass.LLM_TIMEOUT,
+            ) from exc
+        except APIStatusError as exc:
+            fc = (
+                FailureClass.LLM_RATE_LIMIT
+                if getattr(exc, "status_code", None) == 429
+                else FailureClass.LLM_ERROR
+            )
+            raise LLMError(
+                f"Streaming error from {self._base_url} ({exc.status_code}): {exc}",
+                failure_class=fc,
+            ) from exc
+        except APIConnectionError as exc:
+            raise LLMError(
+                f"Connection error to {self._base_url} during stream: {exc}",
                 failure_class=FailureClass.LLM_ERROR,
             ) from exc
 

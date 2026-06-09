@@ -232,6 +232,10 @@ class L1ChatCache:
             [{"role": m.role, "content": m.content, "tokens": m.tokens} for m in msgs],
             token_budget,
         )
+        # Strip the internal "tokens" bookkeeping key — these dicts end up in
+        # AssembledContext.messages and are passed straight to the LLM, where
+        # strict APIs reject unknown message fields.
+        kept = [{"role": m["role"], "content": m["content"]} for m in kept]
 
         return TierResult(
             tier="L1",
@@ -613,9 +617,13 @@ class L3KnowledgeStore:
                         db_id, relevant_tables, include_samples=False, max_tables=8
                     )
                     t = _count_tokens(schema_block)
-                    msgs.append({"role": "system", "content": schema_block})
-                    tokens_used += t
-                    sources.append(f"schema:{db_id}(truncated)")
+                    # Re-verify the truncated block actually fits — truncation is
+                    # heuristic and may still exceed the schema budget. Only add
+                    # it when it fits to keep the L3 tier within budget.
+                    if schema_block and t <= schema_budget:
+                        msgs.append({"role": "system", "content": schema_block})
+                        tokens_used += t
+                        sources.append(f"schema:{db_id}(truncated)")
 
         if include_kg:
             kg_result = await self.kg.get(

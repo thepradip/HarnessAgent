@@ -31,13 +31,24 @@ if TYPE_CHECKING:
     from harness.core.context import AgentContext
 
 
+# The OTel TracerProvider is process-global. Setting it more than once leaks
+# BatchSpanProcessor background threads (the old provider is never shut down)
+# and warns. Guard it so only the first StepTracer installs the provider.
+_PROVIDER: Any | None = None
+
+
 def _setup_tracer_provider(
     service_name: str,
     exporter_endpoint: str | None = None,
 ) -> Any:
-    """Configure and register a TracerProvider with OTLP export if available."""
+    """Configure and register the global TracerProvider once (idempotent)."""
+    global _PROVIDER
     if not _OTEL_AVAILABLE:
         return None
+    if _PROVIDER is not None:
+        # Already installed — reuse it instead of overwriting the global and
+        # orphaning the previous provider's exporter threads.
+        return _PROVIDER
 
     resource = Resource.create({"service.name": service_name})
     provider = TracerProvider(resource=resource)
@@ -59,7 +70,25 @@ def _setup_tracer_provider(
             )
 
     trace.set_tracer_provider(provider)
+    _PROVIDER = provider
     return provider
+
+
+def shutdown_tracer_provider() -> None:
+    """Flush and shut down the global TracerProvider, releasing exporter threads.
+
+    Safe to call multiple times and when OTel is not installed. Call this on
+    application shutdown so BatchSpanProcessor threads exit cleanly.
+    """
+    global _PROVIDER
+    if _PROVIDER is None:
+        return
+    try:
+        _PROVIDER.shutdown()
+    except Exception as exc:  # pragma: no cover - best-effort cleanup
+        logger.debug("TracerProvider shutdown failed: %s", exc)
+    finally:
+        _PROVIDER = None
 
 
 class _NoOpSpan:

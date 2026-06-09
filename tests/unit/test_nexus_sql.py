@@ -410,6 +410,49 @@ async def test_generate_sql_no_verifier_no_retries():
 
 
 # ===========================================================================
+# Regression: _verify must inject the SQLSandbox into the verifier (item 6)
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_verify_injects_sandbox_into_verifier(tmp_path):
+    """When a db_path is given, the verifier must receive a real sandbox.
+
+    Regression: _verify built a SQLSandbox but never passed it, so the
+    verifier ran with sandbox=None and silently skipped execution/gold checks.
+    """
+    db = _sqlite_db(tmp_path)
+
+    class _SandboxCapturingVerifier:
+        def __init__(self):
+            self._sandbox = None  # mirrors SQLVerifier built with sandbox=None
+            self.seen_sandbox = "unset"
+
+        async def verify(self, task, action, result=None, gold=None, **kwargs):
+            from harness.improvement.rlvr.verifiers import (
+                VerificationResult,
+                VerificationStep,
+            )
+            # Capture what the verifier sees at call time.
+            self.seen_sandbox = self._sandbox
+            return VerificationResult(
+                overall_reward=0.95,
+                verdict="correct",
+                steps=[VerificationStep("t", True, 0.95, "ok")],
+                feedback_for_agent="ok",
+            )
+
+    verifier = _SandboxCapturingVerifier()
+    agent = NexusSql(llm_provider=_MockLLM("SELECT COUNT(*) FROM employees"), verifier=verifier)
+
+    await agent.generate_sql("count employees", db_path=db, db_id="emp_db")
+
+    from harness.eval.sandbox import SQLSandbox
+    assert isinstance(verifier.seen_sandbox, SQLSandbox), (
+        "verifier was invoked without an injected sandbox"
+    )
+
+
+# ===========================================================================
 # NexusSqlAgent — harness agent (unit-level, no full run loop)
 # ===========================================================================
 

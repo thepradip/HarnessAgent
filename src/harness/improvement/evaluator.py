@@ -292,6 +292,28 @@ class PatchEvaluator:
         """
         agent_type = getattr(patch, "agent_type", "")
 
+        # Capture the EXACT active version BEFORE touching anything, so we can
+        # restore precisely it on failure or regression. rollback(steps=1) is
+        # unsafe here: if apply_patch fails before promoting a new version, a
+        # blind step-back demotes the pre-existing good version.
+        baseline_version_id = ""
+        try:
+            active = await self._pm.get_version(agent_type)
+            baseline_version_id = active.version_id if active else ""
+        except Exception as exc:
+            logger.debug("Could not capture baseline version: %s", exc)
+
+        async def _restore_baseline(context: str) -> None:
+            if not baseline_version_id:
+                return
+            try:
+                await self._pm.promote(baseline_version_id)
+                logger.info("Restored baseline version %s (%s)",
+                            baseline_version_id[:8], context)
+            except Exception as exc:
+                logger.warning("Failed to restore baseline version (%s): %s",
+                               context, exc)
+
         # Baseline: current active prompt
         baseline_report = await self._runner.run(
             dataset=dataset,
@@ -300,8 +322,10 @@ class PatchEvaluator:
         )
 
         # Apply patch temporarily and eval
+        promoted = False
         try:
             new_version = await self._pm.apply_patch(patch)
+            promoted = True
             patched_report = await self._runner.run(
                 dataset=dataset,
                 tenant_id=tenant_id,
@@ -309,11 +333,10 @@ class PatchEvaluator:
             )
         except Exception as exc:
             logger.error("Error applying patch for eval: %s", exc)
-            # Roll back
-            try:
-                await self._pm.rollback(agent_type, steps=1)
-            except Exception:
-                pass
+            # Only restore if the patch was actually promoted; otherwise the
+            # active version is untouched and must be left alone.
+            if promoted:
+                await _restore_baseline("apply/eval failed after promotion")
             return 0.0
 
         baseline_sr = baseline_report.success_rate
@@ -333,12 +356,12 @@ class PatchEvaluator:
             score,
         )
 
-        # If patch made things worse, roll back
-        if patched_sr < baseline_sr:
-            try:
-                await self._pm.rollback(agent_type, steps=1)
-                logger.info("Rolled back patch (regression detected)")
-            except Exception as exc:
-                logger.warning("Rollback after regression failed: %s", exc)
+        # Keep the patch promoted ONLY on strict improvement. A tie
+        # (patched_sr == baseline_sr) adds prompt complexity for no gain, so we
+        # restore the exact baseline version rather than leaving it promoted.
+        if patched_sr <= baseline_sr:
+            await _restore_baseline(
+                "regression" if patched_sr < baseline_sr else "no improvement (tie)"
+            )
 
         return score

@@ -52,6 +52,20 @@ async def test_create_version_increments_version_number(redis_client):
 
 
 @pytest.mark.asyncio
+async def test_version_number_never_reused_after_delete(redis_client):
+    # Regression: zcard+1 would reuse a number after a delete (count shrinks),
+    # colliding in the version_number-scored index. The monotonic counter must
+    # keep advancing.
+    store = _store(redis_client)
+    v1 = await store.create_version("sql", "v1")
+    v2 = await store.create_version("sql", "v2")
+    await store.delete("sql", v2.version_id)
+    v3 = await store.create_version("sql", "v3")
+    assert v3.version_number == 3  # not 2 (which would collide with v2's slot)
+    assert v3.version_number != v1.version_number
+
+
+@pytest.mark.asyncio
 async def test_version_numbers_independent_per_agent_type(redis_client):
     store = _store(redis_client)
     sql_v1 = await store.create_version("sql", "sql prompt")

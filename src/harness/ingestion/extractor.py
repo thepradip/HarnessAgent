@@ -50,7 +50,9 @@ Text:
 {text}
 ---
 
-Output a JSON array where each element has keys: "subject", "predicate", "object", "confidence" (0.0-1.0).
+The text is split into numbered chunks marked "[Chunk N/M]".
+Output a JSON array where each element has keys: "subject", "predicate", "object",
+"confidence" (0.0-1.0), and "chunk" (the 1-based chunk number the fact came from).
 Focus on:
 - Named entities (people, organizations, products, technologies)
 - Relationships (is_a, has, uses, belongs_to, created_by, located_in)
@@ -58,8 +60,8 @@ Focus on:
 
 Example output:
 [
-  {{"subject": "Python", "predicate": "is_a", "object": "programming language", "confidence": 1.0}},
-  {{"subject": "Guido van Rossum", "predicate": "created", "object": "Python", "confidence": 1.0}}
+  {{"subject": "Python", "predicate": "is_a", "object": "programming language", "confidence": 1.0, "chunk": 1}},
+  {{"subject": "Guido van Rossum", "predicate": "created", "object": "Python", "confidence": 1.0, "chunk": 2}}
 ]
 
 JSON array:"""
@@ -128,8 +130,17 @@ async def extract_facts(
                 confidence = float(item.get("confidence", 1.0))
                 confidence = max(0.0, min(1.0, confidence))
 
-                # Attribute to first chunk in batch as a representative
+                # Attribute to the chunk the LLM cited (1-based index into the
+                # batch). Fall back to the first chunk only when the index is
+                # missing or out of range, instead of mis-attributing every fact
+                # in the batch to batch[0].
                 source_chunk_id = batch[0].chunk_id if batch else ""
+                try:
+                    chunk_idx = int(item.get("chunk", 0)) - 1
+                    if batch and 0 <= chunk_idx < len(batch):
+                        source_chunk_id = batch[chunk_idx].chunk_id
+                except (TypeError, ValueError):
+                    pass
 
                 all_facts.append(
                     ExtractedFact(

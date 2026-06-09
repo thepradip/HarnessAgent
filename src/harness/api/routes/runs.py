@@ -105,7 +105,12 @@ def _get_runner(redis: Any, agent_factory: Any = None) -> AgentRunner:
 
 
 def _enqueue_run(run_id: str, agent_type: str) -> str:
-    """Enqueue a run on the RQ queue consumed by harness.workers.agent_worker."""
+    """Enqueue a run on the RQ queue consumed by harness.workers.agent_worker.
+
+    Uses a synchronous Redis connection (RQ is sync-only). The connection is
+    closed before returning so each enqueue does not leak a connection. This
+    function is blocking and MUST be run off the event loop (see create_run).
+    """
     import redis as sync_redis
     from rq import Queue
 
@@ -113,9 +118,15 @@ def _enqueue_run(run_id: str, agent_type: str) -> str:
 
     cfg = get_config()
     conn = sync_redis.from_url(cfg.redis_url, decode_responses=False)
-    queue = Queue(agent_type, connection=conn)
-    job = queue.enqueue(process_run_job, run_id)
-    return job.id
+    try:
+        queue = Queue(agent_type, connection=conn)
+        job = queue.enqueue(process_run_job, run_id)
+        return job.id
+    finally:
+        try:
+            conn.close()
+        except Exception:  # pragma: no cover - best-effort cleanup
+            logger.debug("Failed to close sync Redis connection for enqueue", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -159,13 +170,26 @@ async def create_run(
 
     # Enqueue in RQ for the worker to pick up. The worker listens on RQ queues
     # named after agent types, so a plain Redis list would leave runs stranded.
+    # _enqueue_run is blocking (sync Redis + RQ), so run it off the event loop.
     try:
-        job_id = _enqueue_run(record.run_id, body.agent_type)
+        job_id = await asyncio.to_thread(_enqueue_run, record.run_id, body.agent_type)
         record.metadata = {**record.metadata, "queue": body.agent_type, "job_id": job_id}
         await runner.update_run(record)
         logger.info("Enqueued run %s as RQ job %s on queue %s", record.run_id, job_id, body.agent_type)
     except Exception as exc:
-        logger.warning("Failed to enqueue run %s: %s", record.run_id, exc)
+        # Enqueue failed: the run would otherwise sit in 'pending' forever with
+        # no worker. Mark it failed and surface a 503 so the client can retry.
+        logger.error("Failed to enqueue run %s: %s", record.run_id, exc)
+        try:
+            record.status = "failed"
+            record.result = {"error": f"Failed to enqueue run: {exc}"}
+            await runner.update_run(record)
+        except Exception:  # pragma: no cover - best-effort bookkeeping
+            logger.debug("Failed to mark run %s as failed after enqueue error", record.run_id, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to enqueue run for processing; please retry.",
+        ) from exc
 
     return RunRecordResponse.from_record(record)
 

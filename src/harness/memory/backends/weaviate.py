@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 _CLASS_NAME = "HarnessMemory"
 
+# Metadata keys that are promoted to first-class, filterable Weaviate properties
+# (in addition to being kept inside metadata_json for round-trip fidelity).
+# _build_weaviate_filter targets these via Filter.by_property(...).
+_FILTERABLE_FIELDS = ("run_id", "tenant_id", "type")
+
 _CLASS_SCHEMA: dict[str, Any] = {
     "class": _CLASS_NAME,
     "description": "Harness long-term memory store",
@@ -35,6 +40,10 @@ _CLASS_SCHEMA: dict[str, Any] = {
             "dataType": ["text"],
             "description": "ISO-8601 creation timestamp",
         },
+        # Promoted filterable fields (kept as TEXT for exact-match equals).
+        {"name": "run_id", "dataType": ["text"], "description": "run_id (filterable)"},
+        {"name": "tenant_id", "dataType": ["text"], "description": "tenant_id (filterable)"},
+        {"name": "type", "dataType": ["text"], "description": "memory type (filterable)"},
     ],
 }
 
@@ -109,6 +118,10 @@ class WeaviateVectorStore:
                         wcc.Property(name="text", data_type=wcc.DataType.TEXT),
                         wcc.Property(name="metadata_json", data_type=wcc.DataType.TEXT),
                         wcc.Property(name="created_at", data_type=wcc.DataType.TEXT),
+                        # Promoted filterable fields — see _FILTERABLE_FIELDS.
+                        wcc.Property(name="run_id", data_type=wcc.DataType.TEXT),
+                        wcc.Property(name="tenant_id", data_type=wcc.DataType.TEXT),
+                        wcc.Property(name="type", data_type=wcc.DataType.TEXT),
                     ],
                 )
                 logger.info("Created Weaviate class '%s'", _CLASS_NAME)
@@ -152,6 +165,11 @@ class WeaviateVectorStore:
             "metadata_json": json.dumps(metadata, default=str),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
+        # Promote filterable fields to top-level properties so
+        # _build_weaviate_filter (Filter.by_property) can match them.
+        for fld in _FILTERABLE_FIELDS:
+            if fld in metadata and metadata[fld] is not None:
+                properties[fld] = str(metadata[fld])
         obj_uuid = _to_uuid(id)
 
         try:
@@ -228,12 +246,19 @@ class WeaviateVectorStore:
                 except (json.JSONDecodeError, TypeError):
                     meta = {}
 
-                distance = (
-                    obj.metadata.distance
-                    if obj.metadata and obj.metadata.distance is not None
-                    else 1.0
-                )
-                score = float(1.0 - distance)
+                # Hybrid search ranks by a fused relevance score (higher is
+                # better) and does NOT populate distance. Pure near-vector search
+                # populates distance (lower is better). Read the right field for
+                # each path, otherwise every hybrid hit scores 0.0 and gets
+                # discarded by downstream threshold filters.
+                md = obj.metadata
+                if hybrid_alpha is not None and md and md.score is not None:
+                    score = float(md.score)
+                else:
+                    distance = (
+                        md.distance if md and md.distance is not None else 1.0
+                    )
+                    score = float(1.0 - distance)
 
                 hits.append(
                     VectorHit(
@@ -321,6 +346,9 @@ def _build_weaviate_filter(filter: dict[str, Any]) -> Any:
 
         filters = []
         for field_name, value in filter.items():
+            # Promoted fields are stored as TEXT, so equals must compare strings.
+            if field_name in _FILTERABLE_FIELDS and value is not None:
+                value = str(value)
             filters.append(
                 wcq.Filter.by_property(field_name).equal(value)
             )

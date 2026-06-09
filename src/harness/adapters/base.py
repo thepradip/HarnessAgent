@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator
@@ -11,6 +12,18 @@ if TYPE_CHECKING:
     from harness.core.context import AgentContext, StepEvent
 
 logger = logging.getLogger(__name__)
+
+# Mirrors tools/registry.py: a safety-pipeline ERROR (not a clean "blocked"
+# decision) fails CLOSED by default — the call is treated as a violation. Set
+# HARNESS_SAFETY_FAIL_OPEN=1 to restore the old fail-open behaviour.
+_SAFETY_FAIL_OPEN_ENV = "HARNESS_SAFETY_FAIL_OPEN"
+
+
+def _safety_fails_open() -> bool:
+    """True when a safety-pipeline error should let execution proceed."""
+    return os.environ.get(_SAFETY_FAIL_OPEN_ENV, "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 
 @dataclass
@@ -54,12 +67,21 @@ class FrameworkAdapter(ABC):
         self._cost_tracker: Any | None = None
         self._audit_logger: Any | None = None
         self._mcp_clients: list[tuple[Any, list[str] | None]] = []
+        # None → defer to HARNESS_SAFETY_FAIL_OPEN env var at call time.
+        self._safety_fail_open: bool | None = None
+
+    def _safety_fails_open(self) -> bool:
+        """True when a safety-pipeline error should let execution proceed."""
+        if getattr(self, "_safety_fail_open", None) is not None:
+            return bool(self._safety_fail_open)
+        return _safety_fails_open()
 
     def attach_harness(
         self,
         safety_pipeline: Any | None = None,
         cost_tracker: Any | None = None,
         audit_logger: Any | None = None,
+        safety_fail_open: bool | None = None,
     ) -> "FrameworkAdapter":
         """Inject production components into this adapter.
 
@@ -79,6 +101,8 @@ class FrameworkAdapter(ABC):
         self._safety_pipeline = safety_pipeline
         self._cost_tracker = cost_tracker
         self._audit_logger = audit_logger
+        if safety_fail_open is not None:
+            self._safety_fail_open = safety_fail_open
         return self
 
     def attach_mcp(
@@ -164,7 +188,22 @@ class FrameworkAdapter(ABC):
             except SafetyViolation:
                 raise
             except Exception as exc:
-                logger.debug("Adapter input safety check failed: %s", exc)
+                # The pipeline ERRORED (couldn't reach a decision). Fail closed
+                # by default — a broken guard must not silently pass input.
+                if self._safety_fails_open():
+                    logger.warning(
+                        "Adapter input safety check errored; failing OPEN "
+                        "(HARNESS_SAFETY_FAIL_OPEN set): %s", exc,
+                    )
+                else:
+                    logger.error("Adapter input safety check errored; failing CLOSED: %s", exc)
+                    raise SafetyViolation(
+                        f"Input safety check failed in {self.framework_name} adapter "
+                        f"(failing closed): {exc}. Set HARNESS_SAFETY_FAIL_OPEN=1 to "
+                        "restore fail-open behaviour.",
+                        guard_source="input_guard",
+                        failure_class=FailureClass.SAFETY_INPUT,
+                    ) from exc
 
         # --- Run framework and check each step ---
         async for event in self.run(ctx, input):
@@ -185,7 +224,24 @@ class FrameworkAdapter(ABC):
                     except SafetyViolation:
                         raise
                     except Exception as exc:
-                        logger.debug("Adapter output safety check failed: %s", exc)
+                        # Pipeline ERRORED — fail closed by default so a broken
+                        # guard cannot silently leak unchecked output.
+                        if self._safety_fails_open():
+                            logger.warning(
+                                "Adapter output safety check errored; failing OPEN "
+                                "(HARNESS_SAFETY_FAIL_OPEN set): %s", exc,
+                            )
+                        else:
+                            logger.error(
+                                "Adapter output safety check errored; failing CLOSED: %s", exc
+                            )
+                            raise SafetyViolation(
+                                f"Output safety check failed in {self.framework_name} "
+                                f"adapter (failing closed): {exc}. Set "
+                                "HARNESS_SAFETY_FAIL_OPEN=1 to restore fail-open.",
+                                guard_source="output_guard",
+                                failure_class=FailureClass.SAFETY_OUTPUT,
+                            ) from exc
             yield event
 
         # --- Cost recording ---

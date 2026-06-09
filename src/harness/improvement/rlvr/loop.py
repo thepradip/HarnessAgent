@@ -13,8 +13,10 @@ Each completed episode:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -30,6 +32,14 @@ _POS_THRESHOLD = 0.5          # advantage ≥ this → reinforce
 _NEG_THRESHOLD = -0.5         # advantage ≤ this → patch
 _MAX_FEWSHOT_PER_CYCLE = 3    # positive few-shots added per cycle
 _MAX_ERRORS_FOR_PATCH = 5     # negative steps fed to PatchGenerator
+_MAX_FEWSHOT_PER_AGENT = 50   # hard cap on stored few-shots per agent_type
+_PROCESSED_RUN_MEMORY = 4096  # how many recent run_ids to remember for dedup
+
+
+def _fewshot_key(task: str, action: str) -> str:
+    """Stable hash of a (task, action) pair for few-shot dedup."""
+    h = hashlib.sha1(f"{task}\x00{action}".encode("utf-8", "replace"))
+    return h.hexdigest()
 
 
 @dataclass
@@ -84,6 +94,12 @@ class RLVRLoop:
         self._min_steps = min_steps
         self._pos_threshold = pos_threshold
         self._neg_threshold = neg_threshold
+        # Idempotency + dedup state (in-memory; the loop is a long-lived object).
+        self._processed_runs: set[str] = set()
+        self._processed_order: deque[str] = deque(maxlen=_PROCESSED_RUN_MEMORY)
+        # Per-agent set of (task, action) hashes already stored as few-shots,
+        # and a count so we can cap how many we keep.
+        self._fewshot_hashes: dict[str, set[str]] = {}
 
     async def process_episode(
         self,
@@ -93,7 +109,14 @@ class RLVRLoop:
         """
         Process a completed episode. Returns None if episode has too few steps.
         Call this after receiving a 'completed' or 'failed' StepEvent for the run.
+
+        Idempotent: a run_id is processed at most once. Re-delivery of the same
+        'completed' event will not append duplicate few-shots or re-patch.
         """
+        if run_id in self._processed_runs:
+            logger.debug("RLVR: run=%s already processed — skipping", run_id[:8])
+            return None
+
         episode = await self._buffer.get_episode(run_id)
         if len(episode) < self._min_steps:
             logger.debug(
@@ -134,8 +157,19 @@ class RLVRLoop:
             fewshots_added=fewshots_added,
         )
 
+        # 5. Mark processed and drop the episode buffer so a re-delivered
+        #    'completed' event cannot trigger a second cycle for this run.
+        self._mark_processed(run_id)
+        await self._buffer.delete_episode(run_id)
+
         logger.info(result.summary())
         return result
+
+    def _mark_processed(self, run_id: str) -> None:
+        if len(self._processed_order) == self._processed_order.maxlen:
+            self._processed_runs.discard(self._processed_order[0])
+        self._processed_order.append(run_id)
+        self._processed_runs.add(run_id)
 
     # ------------------------------------------------------------------
     # Reinforce: store high-advantage (task, action) pairs as few-shots
@@ -150,10 +184,25 @@ class RLVRLoop:
         if not positive or self._prompt_store is None:
             return 0
 
+        seen = self._fewshot_hashes.setdefault(agent_type, set())
+        if len(seen) >= _MAX_FEWSHOT_PER_AGENT:
+            logger.debug(
+                "RLVR: few-shot cap (%d) reached for %s — not adding more",
+                _MAX_FEWSHOT_PER_AGENT, agent_type,
+            )
+            return 0
+
         # Sort by advantage (highest first) and take top N
         top = sorted(positive, key=lambda a: -a.advantage)[:max_examples]
         added = 0
         for adv in top:
+            # Dedup on (task, action): the same winning pattern recorded across
+            # episodes must not be appended repeatedly.
+            fp = _fewshot_key(adv.step.task, adv.step.action)
+            if fp in seen:
+                continue
+            if len(seen) >= _MAX_FEWSHOT_PER_AGENT:
+                break
             try:
                 example = (
                     f"# Task: {adv.step.task}\n"
@@ -173,6 +222,7 @@ class RLVRLoop:
                         proposed_by="rlvr",
                     )
                     await _safe(self._prompt_store.apply_patch(patch))
+                seen.add(fp)
                 added += 1
             except Exception as exc:
                 logger.debug("reinforce fewshot failed: %s", exc)

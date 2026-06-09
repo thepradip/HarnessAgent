@@ -29,17 +29,27 @@ logger = logging.getLogger(__name__)
 class E2BSandbox:
     """Persistent E2B cloud sandbox, mirroring SessionDockerSandbox's surface."""
 
+    # Default lifetime of the *session* sandbox (its auto-kill TTL). It must be
+    # well above the per-exec timeout so the sandbox survives between run_code
+    # calls. E2B caps this at 1h on most plans.
+    _DEFAULT_SESSION_TTL = 3600.0
+
     def __init__(
         self,
         *,
         api_key: str | None = None,
         template: str | None = None,
         timeout: float = 30.0,
+        session_ttl: float | None = None,
         workspace_path: Path | None = None,
     ) -> None:
         self._api_key = api_key or None
         self._template = template or None
-        self._timeout = timeout
+        self._timeout = timeout  # per-exec timeout for run_code
+        # Sandbox auto-kill TTL — independent of (and longer than) per-exec.
+        self._session_ttl = session_ttl or max(
+            self._DEFAULT_SESSION_TTL, timeout
+        )
         self._workspace = workspace_path  # accepted for interface parity; unused
         self._sandbox: Any = None
 
@@ -74,7 +84,10 @@ class E2BSandbox:
     # ------------------------------------------------------------------
     async def __aenter__(self) -> E2BSandbox:
         sandbox_cls = self._ensure_sdk()
-        create_kwargs: dict[str, Any] = {"timeout": int(self._timeout)}
+        # ``timeout`` on create() is the sandbox auto-kill TTL, NOT the per-exec
+        # timeout — using the short per-exec value here kills the session
+        # sandbox between calls. Use the longer session TTL.
+        create_kwargs: dict[str, Any] = {"timeout": int(self._session_ttl)}
         if self._api_key:
             create_kwargs["api_key"] = self._api_key
         if self._template:

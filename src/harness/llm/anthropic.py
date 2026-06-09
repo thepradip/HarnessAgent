@@ -278,6 +278,7 @@ class AnthropicProvider:
         self._ensure_client()
         RateLimitError = self._exc_rate_limit
         APITimeoutError = self._exc_timeout
+        APIConnectionError = self._exc_connection
         APIStatusError = self._exc_status
 
         try:
@@ -294,6 +295,11 @@ class AnthropicProvider:
                 f"Anthropic stream timed out: {exc}",
                 failure_class=FailureClass.LLM_TIMEOUT,
             ) from exc
+        except APIConnectionError as exc:
+            raise LLMError(
+                f"Anthropic connection error during stream: {exc}",
+                failure_class=FailureClass.LLM_ERROR,
+            ) from exc
         except APIStatusError as exc:
             raise LLMError(
                 f"Anthropic API error during stream ({exc.status_code}): {exc}",
@@ -301,15 +307,16 @@ class AnthropicProvider:
             ) from exc
 
     async def health_check(self) -> bool:
-        """Return True if the Anthropic API is reachable."""
+        """Return True if the Anthropic API is reachable.
+
+        Uses a cheap, non-billable reachability probe (``models.list``) rather
+        than a billable ``messages.create`` completion. A rate-limit response
+        still means the API is up.
+        """
         self._ensure_client()
         RateLimitError = self._exc_rate_limit
         try:
-            await self._client.messages.create(
-                model=self.model,
-                max_tokens=1,
-                messages=[{"role": "user", "content": "ping"}],
-            )
+            await self._client.models.list(limit=1)
             return True
         except RateLimitError:
             return True  # rate-limited but the API is up

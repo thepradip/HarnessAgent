@@ -8,8 +8,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from harness.improvement.error_collector import ErrorRecord
-from harness.improvement.evaluator import EvalResult
+from harness.improvement.error_collector import (
+    ErrorCollector,
+    ErrorRecord,
+    _error_key,
+)
+from harness.improvement.evaluator import EvalResult, PatchEvaluator
 from harness.improvement.hermes import HermesLoop, PatchOutcome
 from harness.improvement.patch_generator import Patch
 
@@ -150,6 +154,33 @@ async def test_cycle_rejects_patch_when_score_below_threshold():
     assert outcome is not None
     assert outcome.applied is False
     prompt_store.apply_patch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cycle_marginal_score_not_rejected_as_below_threshold():
+    # auto_apply=True, score >= threshold but inside the regression-safety
+    # margin (threshold <= score < threshold+0.15 and < 0.9). It must NOT be
+    # rejected with a "Score < threshold" reason — that branch was a bug.
+    errors = [_make_error() for _ in range(10)]
+    patch = _make_patch()
+    prompt_store = AsyncMock()
+    prompt_store.apply_patch = AsyncMock()
+    collector = AsyncMock()
+    collector.count = AsyncMock(return_value=10)
+    collector.get_recent = AsyncMock(return_value=errors)
+    generator = AsyncMock()
+    generator.generate = AsyncMock(return_value=patch)
+    evaluator = AsyncMock()
+    evaluator.score = AsyncMock(return_value=MagicMock(score=0.75, test_cases=10, successes=8))
+    hermes = _make_hermes(collector=collector, generator=generator, evaluator=evaluator,
+                          prompt_store=prompt_store, config=_make_config(auto_apply=True, threshold=0.7))
+    outcome = await hermes.run_cycle("sql")
+    assert outcome is not None
+    assert outcome.applied is False
+    prompt_store.apply_patch.assert_not_called()
+    assert "< threshold" not in outcome.reason
+    assert patch.status == "pending"
+    assert "margin" in outcome.reason.lower() or "manual review" in outcome.reason.lower()
 
 
 @pytest.mark.asyncio
@@ -309,3 +340,97 @@ async def test_patch_generator_returns_valid_patch_json():
     assert isinstance(patch, Patch)
     assert patch.agent_type == "sql"
     assert patch.op in ("append", "replace", "remove", "add_example")
+
+
+def _pe_pm_with_active(version_id="v-base"):
+    pm = AsyncMock()
+    pm.get_version = AsyncMock(return_value=MagicMock(version_id=version_id))
+    pm.apply_patch = AsyncMock(return_value=MagicMock(version_id="v-new"))
+    pm.promote = AsyncMock()
+    pm.rollback = AsyncMock()
+    return pm
+
+
+def _pe_runner(baseline_sr, patched_sr):
+    runner = AsyncMock()
+    runner.run = AsyncMock(side_effect=[
+        MagicMock(success_rate=baseline_sr),
+        MagicMock(success_rate=patched_sr),
+    ])
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_patch_evaluator_tie_restores_exact_baseline():
+    # A tie (patched_sr == baseline_sr) must NOT leave the patch promoted; the
+    # exact pre-existing version is restored via promote(baseline_id).
+    pm = _pe_pm_with_active("v-base")
+    pe = PatchEvaluator(eval_runner=_pe_runner(0.6, 0.6), prompt_manager=pm)
+    score = await pe.score_patch(_make_patch(), dataset=MagicMock())
+    assert score == pytest.approx(0.5)
+    pm.promote.assert_called_once_with("v-base")
+    pm.rollback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_patch_evaluator_strict_improvement_keeps_patch():
+    pm = _pe_pm_with_active("v-base")
+    pe = PatchEvaluator(eval_runner=_pe_runner(0.6, 0.8), prompt_manager=pm)
+    score = await pe.score_patch(_make_patch(), dataset=MagicMock())
+    assert score > 0.5
+    pm.promote.assert_not_called()
+    pm.rollback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_patch_evaluator_regression_restores_exact_baseline():
+    pm = _pe_pm_with_active("v-base")
+    pe = PatchEvaluator(eval_runner=_pe_runner(0.8, 0.5), prompt_manager=pm)
+    score = await pe.score_patch(_make_patch(), dataset=MagicMock())
+    assert score < 0.5
+    pm.promote.assert_called_once_with("v-base")
+
+
+@pytest.mark.asyncio
+async def test_patch_evaluator_no_rollback_when_apply_fails_before_promote():
+    # apply_patch raises before any new version is promoted — the active
+    # version is untouched, so we must NOT promote/rollback anything.
+    pm = _pe_pm_with_active("v-base")
+    pm.apply_patch = AsyncMock(side_effect=RuntimeError("apply failed"))
+    runner = AsyncMock()
+    runner.run = AsyncMock(return_value=MagicMock(success_rate=0.7))
+    pe = PatchEvaluator(eval_runner=runner, prompt_manager=pm)
+    score = await pe.score_patch(_make_patch(), dataset=MagicMock())
+    assert score == 0.0
+    pm.promote.assert_not_called()
+    pm.rollback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_error_collector_trims_record_keys_not_just_index(redis_client):
+    # Regression for orphaned record keys: when the index is trimmed past
+    # max_records, the evicted record:<id> keys must be deleted too (and live
+    # records carry a TTL), otherwise they leak forever.
+    collector = ErrorCollector(redis_client, max_records=3)
+    recs = []
+    for _ in range(6):
+        rec = await collector.record(
+            agent_type="sql",
+            task="t",
+            failure_class="X",
+            error_message="boom",
+        )
+        recs.append(rec)
+
+    # Only the 3 newest remain indexed.
+    assert await collector.count("sql") == 3
+
+    # The 3 oldest record keys must have been deleted, not orphaned.
+    oldest = recs[:3]
+    for rec in oldest:
+        assert await redis_client.get(_error_key(rec.record_id)) is None
+
+    # Surviving records still carry a positive TTL.
+    newest = recs[-1]
+    assert await redis_client.get(_error_key(newest.record_id)) is not None
+    assert await redis_client.ttl(_error_key(newest.record_id)) > 0

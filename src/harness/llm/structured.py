@@ -157,6 +157,9 @@ class StructuredOutputRouter:
             try:
                 import anthropic
 
+                # The SDK client is lazy-loaded — ensure it exists before
+                # handing it to instructor (instructor.from_anthropic(None) raises).
+                provider._ensure_client()
                 patched = instructor.from_anthropic(provider._client)
                 build_kwargs: dict[str, Any] = {
                     "model": provider.model,

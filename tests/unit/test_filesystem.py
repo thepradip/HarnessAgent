@@ -140,6 +140,53 @@ async def test_checkpoint_save_no_tmp_left_behind(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_checkpoint_save_fsyncs_and_uses_atomic_replace(tmp_path, monkeypatch):
+    """Regression (item 7): save() must os.fsync the data and os.replace() it.
+
+    Guards against the non-crash-safe path that wrote with no fsync and a fixed
+    racy ``checkpoint.tmp`` name.
+    """
+    import harness.filesystem.checkpoint as cp
+
+    fsync_calls: list[int] = []
+    replace_calls: list[tuple] = []
+    real_fsync = cp.os.fsync
+    real_replace = cp.os.replace
+
+    def spy_fsync(fd):
+        fsync_calls.append(fd)
+        return real_fsync(fd)
+
+    def spy_replace(src, dst):
+        replace_calls.append((str(src), str(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(cp.os, "fsync", spy_fsync)
+    monkeypatch.setattr(cp.os, "replace", spy_replace)
+
+    mgr = CheckpointManager(tmp_path)
+    ctx = _mock_ctx()
+    path = await mgr.save(ctx, [])
+
+    assert fsync_calls, "checkpoint bytes were not fsync'd before rename"
+    assert replace_calls, "checkpoint was not committed via atomic os.replace"
+    assert replace_calls[0][1].endswith("checkpoint.json")
+    assert path.exists()
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_tmp_suffix_not_matched_by_workspace_cleanup(tmp_path):
+    """The in-flight temp suffix must not match the workspace *.tmp cleanup pattern."""
+    from harness.filesystem.workspace import _TEMP_PATTERNS
+    from harness.filesystem.checkpoint import _CHECKPOINT_TMP_SUFFIX
+
+    # No cleanup glob should match a file using the checkpoint temp suffix.
+    sample = f"checkpoint.json{_CHECKPOINT_TMP_SUFFIX}"
+    import fnmatch
+    assert not any(fnmatch.fnmatch(sample, pat) for pat in _TEMP_PATTERNS)
+
+
+@pytest.mark.asyncio
 async def test_checkpoint_save_history_dicts(tmp_path):
     mgr = CheckpointManager(tmp_path)
     ctx = _mock_ctx()
@@ -352,7 +399,7 @@ async def test_docker_sandbox_runc_does_not_add_runtime_flag(tmp_path):
 
     captured_cmd: list[str] = []
 
-    async def fake_run_command(cmd, workspace_path, env=None):
+    async def fake_run_command(cmd, workspace_path, env=None, container_name=None):
         captured_cmd.extend(cmd)
         from harness.filesystem.sandbox import SandboxResult
         return SandboxResult(stdout="hello\n", stderr="", exit_code=0,
@@ -373,7 +420,7 @@ async def test_docker_sandbox_gvisor_adds_runtime_flag(tmp_path):
     sb = DockerSandbox(runtime="runsc", timeout=5.0)
     captured_cmd: list[str] = []
 
-    async def fake_run_command(cmd, workspace_path, env=None):
+    async def fake_run_command(cmd, workspace_path, env=None, container_name=None):
         captured_cmd.extend(cmd)
         from harness.filesystem.sandbox import SandboxResult
         return SandboxResult(stdout="", stderr="", exit_code=0,

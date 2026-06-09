@@ -238,7 +238,13 @@ class ExpectedOutputVerifier:
         if hasattr(ctx, "metadata"):
             result = ctx.metadata.get("last_code_result")
 
-        stdout = (result or {}).get("stdout", "") or output
+        # Only fall back to the agent's free text when there is NO code result at
+        # all. If code ran but produced empty stdout, that's a failure — we must
+        # not let the agent "pass" by simply stating the expected string.
+        if result is not None:
+            stdout = (result or {}).get("stdout", "") or ""
+        else:
+            stdout = output
         candidate = stdout.strip()
         expected = self._expected.strip()
 

@@ -114,9 +114,13 @@ class DockerSandbox:
         except OSError as exc:
             raise SandboxError(f"Failed to write code to workspace: {exc}")
 
+        # Name the container so we can `docker kill` it on timeout — killing the
+        # local `docker run` client process alone leaves the container running.
+        container_name = f"harness-sbx-{uuid.uuid4().hex[:12]}"
         cmd = [
             "docker", "run",
             "--rm",
+            f"--name={container_name}",
             f"--memory={self._memory_limit}",
             "--memory-swap=-1",            # disable swap
             "--cpus=1",
@@ -136,7 +140,9 @@ class DockerSandbox:
             "python", f"/sandbox/{run_filename}",
         ]
 
-        result = await self.run_command(cmd=cmd, workspace_path=workspace_path)
+        result = await self.run_command(
+            cmd=cmd, workspace_path=workspace_path, container_name=container_name
+        )
 
         # Cleanup temp file
         try:
@@ -151,12 +157,17 @@ class DockerSandbox:
         cmd: list[str],
         workspace_path: Path,
         env: dict[str, str] | None = None,
+        container_name: str | None = None,
     ) -> SandboxResult:
         """
         Execute an arbitrary command inside a Docker container.
 
         The first argument should be "docker" if this is intended as a
         Docker run; otherwise the command is executed directly.
+
+        When ``container_name`` is given, a timeout issues ``docker kill`` on
+        that container (killing the local client process alone leaves the
+        container running) before reaping the client process.
         """
         start_time = time.monotonic()
 
@@ -180,9 +191,25 @@ class DockerSandbox:
             )
         except asyncio.TimeoutError:
             timed_out = True
+            # Kill the actual container, not just the local docker-run client.
+            if container_name:
+                try:
+                    killer = await asyncio.create_subprocess_exec(
+                        "docker", "kill", container_name,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await killer.wait()
+                except Exception as exc:
+                    logger.debug("docker kill %s failed: %s", container_name, exc)
             try:
                 proc.kill()
             except ProcessLookupError:
+                pass
+            # Reap the killed client process to avoid a zombie.
+            try:
+                await proc.wait()
+            except Exception:
                 pass
             stdout_bytes = b""
             stderr_bytes = b"Execution timed out."
@@ -488,14 +515,22 @@ class RestrictedPythonExecutor:
                 execution_time_ms=(time.monotonic() - start_time) * 1000,
             )
 
-        # Build a safe globals dict
-        _print_collector = PrintCollector()
+        # Build a safe globals dict.
+        # RestrictedPython's transformed code calls ``_print_(_getattr_)`` per
+        # scope to construct a fresh collector, so ``_print_`` MUST be the
+        # PrintCollector CLASS, not an instance. Passing an instance makes
+        # print() raise TypeError and the printed output is never captured.
         exec_globals: dict[str, Any] = {
             **safe_globals,
-            "_print_": _print_collector,
+            "_print_": PrintCollector,
             "_getattr_": getattr,
             "_getitem_": lambda obj, idx: obj[idx],
             "_getiter_": iter,
+            # NOTE: ``_write_`` is the write guard for attribute/subscript
+            # assignment. Returning the object unchanged effectively DISABLES
+            # the guard; acceptable for this best-effort local fallback (the
+            # primary isolation is the Docker sandbox), but it is not a hard
+            # security boundary.
             "_write_": lambda x: x,
             "__builtins__": {
                 "print": print,
@@ -536,9 +571,16 @@ class RestrictedPythonExecutor:
                 loop.run_in_executor(None, exec, byte_code, exec_globals),
                 timeout=self._timeout,
             )
-            # Collect printed output
-            if hasattr(_print_collector, "_call_print"):
-                collected_output = list(_print_collector._call_print)
+            # RestrictedPython exposes captured print() output via the ``printed``
+            # global (the string returned by the per-scope PrintCollector). Older
+            # builds expose ``_print`` instead — accept either.
+            printed = exec_globals.get("printed")
+            if printed is None:
+                printed = exec_globals.get("_print")
+            if isinstance(printed, str):
+                collected_output = [printed]
+            elif printed:
+                collected_output = [str(printed)]
         except asyncio.TimeoutError:
             return SandboxResult(
                 stdout="",

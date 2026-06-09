@@ -7,6 +7,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 import redis.asyncio as aioredis
 
@@ -190,12 +191,19 @@ class CostTracker:
         data = await self._redis.hgetall(self._ledger_key(run_id))
         if not data:
             return None
+
+        # Normalise keys/values: production clients use decode_responses=True
+        # (str keys), but a raw client returns bytes. Handle both.
+        def _norm(value: Any) -> Any:
+            return value.decode() if isinstance(value, bytes) else value
+
+        record = {_norm(k): _norm(v) for k, v in data.items()}
         return RunCost(
-            run_id=data[b"run_id"].decode(),
-            tenant_id=data[b"tenant_id"].decode(),
-            model=data[b"model"].decode(),
-            input_tokens=int(data[b"input_tokens"]),
-            output_tokens=int(data[b"output_tokens"]),
-            cost_usd=float(data[b"cost_usd"]),
-            timestamp=datetime.fromisoformat(data[b"timestamp"].decode()),
+            run_id=record["run_id"],
+            tenant_id=record["tenant_id"],
+            model=record["model"],
+            input_tokens=int(record["input_tokens"]),
+            output_tokens=int(record["output_tokens"]),
+            cost_usd=float(record["cost_usd"]),
+            timestamp=datetime.fromisoformat(record["timestamp"]),
         )

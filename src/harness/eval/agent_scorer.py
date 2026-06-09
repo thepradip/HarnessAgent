@@ -215,7 +215,14 @@ async def evaluate_agent_output(
         from harness.eval.scorers import score_exact_match
         c_score = score_exact_match(output, effective_gold)
     else:
-        c_score = 1.0  # no ground truth — assume correct
+        # No ground truth (no gold action and no sandbox): we cannot verify
+        # correctness, so emit a NEUTRAL 0.5 rather than 1.0. Assuming-correct
+        # turned every unlabeled case into a near-guaranteed PASS.
+        c_score = 0.5
+        logger.debug(
+            "agent_scorer: no gold/sandbox for task — correctness unverifiable, "
+            "using neutral 0.5"
+        )
 
     # 5. Quality (LLM judge if provided, else approximate from correctness)
     if llm_judge is not None:

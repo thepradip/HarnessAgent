@@ -359,6 +359,53 @@ async def test_hard_pipeline_check_step_empty_tool_name(hard_pipeline):
     assert r.blocked is False
 
 
+# ---------------------------------------------------------------------------
+# Regression: the fallback pipeline must enforce the allowed_tools allowlist
+# (previously the per-agent-type allowlist was silently dropped when guardrail
+#  was not installed).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_hard_pipeline_enforces_allowlist():
+    p = _HardConstraintPipeline(allowed_tools=["execute_sql", "list_tables"])
+    # On the allowlist — permitted.
+    assert (await p.check_step({"tool_name": "execute_sql"})).blocked is False
+    # Not on the allowlist — blocked.
+    r = await p.check_step({"tool_name": "rm_rf_everything"})
+    assert r.blocked is True
+    assert "rm_rf_everything" in r.reason
+
+
+@pytest.mark.asyncio
+async def test_hard_pipeline_no_allowlist_permits_any_tool():
+    p = _HardConstraintPipeline()  # allowed_tools=None → no allowlist
+    assert (await p.check_step({"tool_name": "anything"})).blocked is False
+
+
+@pytest.mark.asyncio
+async def test_build_pipeline_fallback_passes_allowlist():
+    """When guardrail is unavailable, build_pipeline's fallback must carry the
+    allowed_tools allowlist from the SafetyConfig into the hard-constraint pipeline."""
+    from harness.safety.pipeline_factory import SafetyConfig
+    from unittest.mock import patch
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_guardrail(name, *args, **kwargs):
+        if name == "guardrail.pipeline" or name.startswith("guardrail."):
+            raise ImportError("guardrail not installed")
+        return real_import(name, *args, **kwargs)
+
+    cfg = SafetyConfig(allowed_tools=["read_file", "write_file"])
+    with patch.object(builtins, "__import__", _no_guardrail):
+        pipeline = build_pipeline("code", cfg)
+
+    assert isinstance(pipeline, _HardConstraintPipeline)
+    assert (await pipeline.check_step({"tool_name": "read_file"})).blocked is False
+    assert (await pipeline.check_step({"tool_name": "exfiltrate"})).blocked is True
+
+
 @pytest.mark.asyncio
 async def test_hard_pipeline_check_output_always_allows(hard_pipeline):
     r = await hard_pipeline.check_output({"content": "any output"})

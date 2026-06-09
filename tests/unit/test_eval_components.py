@@ -517,6 +517,8 @@ async def test_evaluate_agent_output_no_sandbox_no_gold():
     assert isinstance(result, AgentScores)
     assert result.verdict in ("PASS", "FAIL")
     assert 0.0 <= result.overall_score <= 1.0
+    # Unverifiable correctness is neutral 0.5, not an assumed-correct 1.0.
+    assert result.correctness_score == pytest.approx(0.5)
 
 
 @pytest.mark.asyncio
@@ -888,3 +890,88 @@ def test_eval_case_from_dict_round_trip():
     assert c2.gold_actions == ["return s[::-1]"]
     assert c2.sandbox_type == "code"
     assert c2.hardness == "easy"
+
+
+# ===========================================================================
+# Scorer correctness regressions (HIGH #2, #3, #7)
+# ===========================================================================
+
+from harness.eval.scorers import (  # noqa: E402
+    score_exact_match,
+    score_execution_match,
+    score_llm_judge,
+)
+
+
+class _RowResult:
+    def __init__(self, rows, error=None):
+        self.output = {"rows": rows}
+        self.error = error
+
+
+class _RowSandbox:
+    def __init__(self, pred_rows, gold_rows):
+        self._pred = pred_rows
+        self._gold = gold_rows
+        self._first = True
+
+    async def execute(self, action, **kw):
+        if self._first:
+            self._first = False
+            return _RowResult(self._pred)
+        return _RowResult(self._gold)
+
+
+@pytest.mark.asyncio
+async def test_execution_match_superset_not_perfect():
+    # Predicting a strict superset of gold must NOT score 1.0 (reward-hacking).
+    sb = _RowSandbox(pred_rows=[[1], [2], [3]], gold_rows=[[1], [2]])
+    res = await score_execution_match("pred", "gold", sb)
+    assert res.score < 1.0
+    assert res.score == pytest.approx(2 / 3, abs=1e-4)
+
+
+@pytest.mark.asyncio
+async def test_execution_match_exact_rows_perfect():
+    sb = _RowSandbox(pred_rows=[[1], [2]], gold_rows=[[2], [1]])
+    res = await score_execution_match("pred", "gold", sb)
+    assert res.score == 1.0
+
+
+@pytest.mark.asyncio
+async def test_llm_judge_outage_scores_below_pass_threshold():
+    # A judge exception or unparseable response must score below 0.5 (the
+    # runner pass threshold), otherwise an outage passes every case.
+    class _BoomProvider:
+        async def complete(self, **kw):
+            raise RuntimeError("provider down")
+
+    res = await score_llm_judge("task", "out", None, _BoomProvider())
+    assert res.score < 0.5
+    assert "unavailable" in res.details.lower()
+
+
+@pytest.mark.asyncio
+async def test_llm_judge_unparseable_scores_below_pass_threshold():
+    class _GarbageResp:
+        content = "the agent did a thing"
+
+    class _GarbageProvider:
+        async def complete(self, **kw):
+            return _GarbageResp()
+
+    res = await score_llm_judge("task", "out", None, _GarbageProvider())
+    assert res.score < 0.5
+
+
+def test_exact_match_numeric_no_substring_inflation():
+    # "142" must not satisfy expected "42".
+    assert score_exact_match("The answer is 142", "42") == 0.0
+    assert score_exact_match("The answer is 42", "42") == 1.0
+    # Final-number convention with commas.
+    assert score_exact_match("Total: 1,234", "1234") == 1.0
+
+
+def test_exact_match_text_word_boundary():
+    assert score_exact_match("classification done", "class") == 0.0
+    assert score_exact_match("the class is ready", "class") == 1.0

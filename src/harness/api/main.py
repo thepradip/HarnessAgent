@@ -95,13 +95,37 @@ async def lifespan(app: FastAPI):
         logger.warning("Agent factory unavailable — runs will execute via worker only: %s", exc)
         app.state.agent_factory = None
 
+    # Single shared TraceRecorder (own connection pool). Reused across requests
+    # so we don't open/leak a fresh pool (max 20 conns) per trace query.
+    try:
+        from harness.observability.trace_recorder import TraceRecorder
+        app.state.trace_recorder = TraceRecorder.create(redis_url=cfg.redis_url)
+        logger.info("TraceRecorder initialised")
+    except Exception as exc:
+        logger.warning("TraceRecorder unavailable: %s", exc)
+        app.state.trace_recorder = None
+
     logger.info("HarnessAgent API started (env=%s)", cfg.environment)
     yield
 
     # Shutdown cleanup
+    if getattr(app.state, "trace_recorder", None) is not None:
+        try:
+            await app.state.trace_recorder.close()
+            logger.info("TraceRecorder connection closed")
+        except Exception as exc:
+            logger.debug("TraceRecorder close failed: %s", exc)
+
     if hasattr(app.state, "redis") and app.state.redis is not None:
         await app.state.redis.aclose()
         logger.info("Redis connection closed")
+
+    # Flush + stop OTel exporter threads if a tracer was installed.
+    try:
+        from harness.observability.tracer import shutdown_tracer_provider
+        shutdown_tracer_provider()
+    except Exception as exc:
+        logger.debug("Tracer shutdown failed: %s", exc)
 
 
 def create_app() -> FastAPI:

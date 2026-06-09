@@ -649,3 +649,77 @@ def test_merge_by_step_empty_lists():
     assert _merge_by_step([single], [])[0].content == "solo"
     assert len(_merge_by_step([], [single])) == 1
     assert _merge_by_step([], [single])[0].content == "solo"
+
+
+# ===========================================================================
+# Regression tests — offload trim direction (item 1) & subagent order (item 2)
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_offload_trims_from_tail_keeps_newest(redis_client, monkeypatch):
+    """Offload must remove the OLDEST (tail) messages and keep the newest.
+
+    Regression for the non-atomic LTRIM-by-head bug: trimming relative to the
+    head silently deleted non-offloaded (newest) messages once new messages
+    were LPUSHed; trimming relative to the tail keeps the newest intact.
+    """
+    import harness.memory.context_engine as ce
+    monkeypatch.setattr(ce, "_HOT_MAX_MSGS", 4)
+    monkeypatch.setattr(ce, "_PAGE_TOKEN_TARGET", 100)
+    # max_hot small so the token threshold (0.8 * max_hot) is exceeded.
+    eng = _make_engine(redis_client, max_hot=500)
+
+    # Push 6 messages: msg0 (oldest) … msg5 (newest), 100 tokens each.
+    for i in range(6):
+        await eng.push("run-trim", "user", f"msg{i}", tokens=100, skill_ns="default")
+
+    # Newest messages must survive; the oldest were offloaded.
+    msgs = await eng._load_hot("run-trim", "default")
+    contents = [m.content for m in msgs]
+    assert "msg5" in contents, "newest message was wrongly deleted"
+    assert "msg0" not in contents, "oldest message should have been offloaded"
+    # Chronological order preserved (oldest-first) among survivors.
+    assert contents == sorted(contents, key=lambda c: int(c[3:]))
+
+
+@pytest.mark.asyncio
+async def test_offload_concurrent_pushes_dont_lose_messages(redis_client, monkeypatch):
+    """A push concurrent with an offload must not be dropped (tail-relative trim)."""
+    import harness.memory.context_engine as ce
+    monkeypatch.setattr(ce, "_HOT_MAX_MSGS", 4)
+    monkeypatch.setattr(ce, "_PAGE_TOKEN_TARGET", 100)
+    eng = _make_engine(redis_client, max_hot=500)
+
+    for i in range(5):
+        await eng.push("run-conc", "user", f"m{i}", tokens=100, skill_ns="default")
+    # One more push after offload already happened.
+    await eng.push("run-conc", "user", "m-after", tokens=100, skill_ns="default")
+
+    msgs = await eng._load_hot("run-conc", "default")
+    contents = [m.content for m in msgs]
+    assert "m-after" in contents
+
+
+@pytest.mark.asyncio
+async def test_slice_for_subagent_preserves_chronological_order(redis_client):
+    """Child hot window must read back oldest-first, matching the parent order.
+
+    Regression for the RPUSH-oldest-first-into-newest-first-list ordering bug.
+    """
+    eng = _make_engine(redis_client)
+    for i in range(4):
+        await eng.push("parent-order", "user", f"turn{i}", tokens=20, skill_ns="default")
+
+    await eng.slice_for_subagent(
+        parent_run_id="parent-order",
+        child_run_id="child-order",
+        task="continue",
+        token_budget=1000,
+    )
+
+    child_msgs = await eng._load_hot("child-order", "default")
+    contents = [m.content for m in child_msgs]
+    # _load_hot returns chronological order; turns must be in ascending order.
+    turn_nums = [int(c[4:]) for c in contents if c.startswith("turn")]
+    assert turn_nums == sorted(turn_nums)
+    assert turn_nums == list(range(turn_nums[0], turn_nums[0] + len(turn_nums)))

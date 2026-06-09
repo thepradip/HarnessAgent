@@ -240,7 +240,10 @@ class Planner:
         except json.JSONDecodeError as exc:
             # Try to find a JSON array anywhere in the text
             import re
-            match = re.search(r"\[.*?\]", text, re.DOTALL)
+            # Greedy match so we capture the FULL outer array. A non-greedy
+            # match stops at the first ']' (e.g. inside a subtask's
+            # "depends_on": []), yielding invalid JSON for real multi-task plans.
+            match = re.search(r"\[.*\]", text, re.DOTALL)
             if match:
                 try:
                     raw_list = json.loads(match.group(0))

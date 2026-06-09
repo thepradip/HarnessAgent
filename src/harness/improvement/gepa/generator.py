@@ -124,6 +124,21 @@ class GepaPatchGenerator:
         # DataInst = ErrorRecord. Cap the working set to bound rollout cost.
         dataset = list(errors[: max(self._min_train, max_errors_in_prompt)])
 
+        # Temporal train/val split (mirrors hermes.py): errors are newest-first,
+        # so the newer half is held out for validation and the older half drives
+        # optimization. Validating on the training set (the old trainset==valset)
+        # makes the reported "validation score" in-sample and uninformative.
+        split = max(1, len(dataset) // 2)
+        valset = dataset[:split]        # newest — held-out validation only
+        trainset = dataset[split:]      # older  — used to evolve the prompt
+        if not trainset:
+            # Sample too small to split — fall back to shared set but flag it.
+            trainset = dataset
+            valset = dataset
+            in_sample = True
+        else:
+            in_sample = False
+
         loop = asyncio.get_running_loop()
         run_coro = make_coro_runner(loop)
         adapter = HarnessGepaAdapter(
@@ -141,8 +156,8 @@ class GepaPatchGenerator:
         def _optimize() -> Any:
             return gepa_optimize(
                 seed_candidate={COMPONENT: seed_prompt},
-                trainset=dataset,
-                valset=dataset,
+                trainset=trainset,
+                valset=valset,
                 adapter=adapter,
                 reflection_lm=reflection_lm,
                 candidate_selection_strategy="pareto",
@@ -174,11 +189,13 @@ class GepaPatchGenerator:
 
         best_score = _best_score(result)
         rationale = (
-            f"GEPA reflective prompt evolution over {len(dataset)} failing task(s) "
+            f"GEPA reflective prompt evolution over {len(trainset)} training "
+            f"task(s) (val={len(valset)}) "
             f"using {getattr(result, 'total_metric_calls', '?')} metric call(s)"
         )
         if best_score is not None:
-            rationale += f"; best validation score {best_score:.3f}"
+            score_label = "in-sample score" if in_sample else "validation score"
+            rationale += f"; best {score_label} {best_score:.3f}"
         rationale += "."
 
         patch = Patch(

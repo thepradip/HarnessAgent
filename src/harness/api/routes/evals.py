@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from harness.api.deps import get_current_tenant
 from harness.core.context import AgentResult
 from harness.eval import (
     MULTI_AGENT_EVAL_CASES,
@@ -155,7 +156,10 @@ async def list_eval_suites() -> dict[str, Any]:
 
 
 @router.post("/smoke/run")
-async def run_smoke_eval(body: EvalRunRequest | None = None) -> dict[str, Any]:
+async def run_smoke_eval(
+    body: EvalRunRequest | None = None,
+    tenant_id: str = Depends(get_current_tenant),
+) -> dict[str, Any]:
     """Run the built-in single-agent smoke evaluation."""
     runner = EvalRunner(_DemoEvalRunner())
     report = await runner.run(
@@ -166,7 +170,10 @@ async def run_smoke_eval(body: EvalRunRequest | None = None) -> dict[str, Any]:
 
 
 @router.post("/multi/run")
-async def run_multi_eval(body: EvalRunRequest | None = None) -> dict[str, Any]:
+async def run_multi_eval(
+    body: EvalRunRequest | None = None,
+    tenant_id: str = Depends(get_current_tenant),
+) -> dict[str, Any]:
     """Run the built-in multi-agent handoff evaluation."""
     runner = EvalRunner(_DemoEvalRunner())
     report = await runner.run_multi_agent(
@@ -180,7 +187,10 @@ async def run_multi_eval(body: EvalRunRequest | None = None) -> dict[str, Any]:
 
 
 @router.post("/compare")
-async def compare_prompt_eval(body: EvalCompareRequest | None = None) -> dict[str, Any]:
+async def compare_prompt_eval(
+    body: EvalCompareRequest | None = None,
+    tenant_id: str = Depends(get_current_tenant),
+) -> dict[str, Any]:
     """Compare baseline and patched prompt labels over the smoke suite."""
     body = body or EvalCompareRequest()
     runner = EvalRunner(_DemoEvalRunner())

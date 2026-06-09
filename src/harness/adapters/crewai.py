@@ -94,10 +94,22 @@ class CrewAIAdapter(FrameworkAdapter):
         original_callback = getattr(self._crew, "step_callback", None)
 
         def _step_cb(output: Any) -> None:
-            """Intercept each agent step; forward to the original callback if set."""
+            """Intercept each agent step; forward to the original callback if set.
+
+            Enforce the harness budget LIVE: ``ctx.tick()`` advances the step
+            counter and raises :class:`BudgetExceeded` once a limit is crossed.
+            Raising here propagates out of ``crew.kickoff()`` (run in the
+            executor) and aborts the crew mid-run instead of letting it spend
+            to completion and only checking the budget during replay.
+            """
             self._step_count += 1
             output_str = str(output)
             self._task_outputs.append(output_str)
+
+            # tick() raises BudgetExceeded when a budget limit is crossed,
+            # which aborts kickoff(). Best-effort: CrewAI may swallow the
+            # exception, so the replay loop below still guards as a backstop.
+            ctx.tick()
             if self._verbose:
                 logger.debug(
                     "CrewAI step %d: %s", self._step_count, output_str[:120]
@@ -110,6 +122,9 @@ class CrewAIAdapter(FrameworkAdapter):
 
         self._crew.step_callback = _step_cb
 
+        from harness.core.errors import BudgetExceeded
+
+        budget_aborted = False
         try:
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
@@ -118,9 +133,34 @@ class CrewAIAdapter(FrameworkAdapter):
             )
             self._final_output = str(result)
             self._kickoff_done = True
+        except BudgetExceeded as exc:
+            # ctx.tick() in the step callback aborted the crew mid-run. Mark
+            # the run done so get_result() works, and emit a budget event below.
+            logger.warning("CrewAI run aborted by budget limit: %s", exc)
+            budget_aborted = True
+            self._final_output = self._task_outputs[-1] if self._task_outputs else ""
+            self._kickoff_done = True
         finally:
             # Restore the crew's original callback regardless of outcome.
             self._crew.step_callback = original_callback
+
+        if budget_aborted:
+            from harness.core.context import StepEvent
+
+            budget_event = StepEvent(
+                run_id=ctx.run_id,
+                step=ctx.step_count,
+                event_type="budget_exceeded",
+                payload={
+                    "framework": self.framework_name,
+                    "step_count": ctx.step_count,
+                    "max_steps": ctx.max_steps,
+                },
+                timestamp=_utcnow(),
+            )
+            await self._publish(budget_event)
+            yield budget_event
+            return
 
         # --- Yield one StepEvent per captured step output ---
         for i, task_out in enumerate(self._task_outputs):
@@ -199,10 +239,17 @@ class CrewAIAdapter(FrameworkAdapter):
 
                         def _run(self, **kwargs: Any) -> str:
                             import asyncio
-                            loop = asyncio.get_event_loop()
-                            result = loop.run_until_complete(
-                                client.call_tool(name, kwargs)
-                            )
+                            # CrewAI calls _run from a worker thread with no
+                            # running loop, so get_event_loop().run_until_complete
+                            # raises RuntimeError. Fall back to asyncio.run, which
+                            # creates and manages its own loop (mirrors AutoGen).
+                            try:
+                                loop = asyncio.get_event_loop()
+                                result = loop.run_until_complete(
+                                    client.call_tool(name, kwargs)
+                                )
+                            except RuntimeError:
+                                result = asyncio.run(client.call_tool(name, kwargs))
                             return str(result)
 
                     return _MCPTool()

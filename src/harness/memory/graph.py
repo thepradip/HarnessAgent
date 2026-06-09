@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +15,25 @@ from harness.core.errors import FailureClass, HarnessError
 from harness.core.protocols import GraphEdge, GraphNode, GraphPath
 
 logger = logging.getLogger(__name__)
+
+# Cypher labels and relationship types are interpolated directly into the query
+# string (they cannot be parameterised), so they MUST be restricted to a safe
+# identifier charset to prevent Cypher injection.
+_SAFE_IDENT = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def _safe_label(value: str, kind: str) -> str:
+    """Validate a Cypher label / relationship type before interpolation.
+
+    Raises HarnessError if ``value`` contains anything outside [A-Za-z0-9_],
+    which prevents injection via crafted node types or relationship predicates.
+    """
+    if not value or not _SAFE_IDENT.match(value):
+        raise HarnessError(
+            f"Invalid Cypher {kind} {value!r}: only [A-Za-z0-9_] are allowed.",
+            failure_class=FailureClass.MEMORY_GRAPH,
+        )
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -189,9 +211,26 @@ class NetworkXGraphMemory:
                 for src, tgt, attrs in self._G.edges(data=True)
             ],
         }
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
-        tmp.rename(path)
+        # Crash-safe atomic write: write to a unique temp file in the same dir,
+        # flush + fsync, then os.replace(). A unique name (not a fixed *.tmp)
+        # avoids racing concurrent saves and avoids matching the workspace
+        # cleanup *.tmp pattern that could delete an in-flight file.
+        payload = json.dumps(data, indent=2, default=str)
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f"{path.name}.", suffix=".swap"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_name, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
     def _load_from_file(self, path: Path) -> None:
         try:
@@ -301,8 +340,9 @@ class Neo4jGraphMemory:
     # ------------------------------------------------------------------
 
     async def add_node(self, id: str, type: str, props: dict[str, Any]) -> None:
+        label = _safe_label(type, "label")
         cypher = (
-            f"MERGE (n:{type} {{id: $id}}) "
+            f"MERGE (n:{label} {{id: $id}}) "
             "SET n += $properties"
         )
         await self._run_query(cypher, {"id": id, "properties": {**props, "id": id}})
@@ -314,10 +354,11 @@ class Neo4jGraphMemory:
         type: str,
         props: dict[str, Any] | None = None,
     ) -> None:
+        rel_type = _safe_label(type, "relationship type")
         cypher = (
             "MATCH (a {id: $src_id}) "
             "MATCH (b {id: $tgt_id}) "
-            f"MERGE (a)-[r:{type}]->(b) "
+            f"MERGE (a)-[r:{rel_type}]->(b) "
             "SET r += $properties"
         )
         await self._run_query(

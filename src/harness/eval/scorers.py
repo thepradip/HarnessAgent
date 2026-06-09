@@ -46,10 +46,16 @@ async def score_execution_match(
         if pred_rows == gold_rows:
             return ScoreResult(score=1.0, method="execution_match", details="result sets equal")
         if not gold_rows:
+            # A non-empty prediction against an empty gold is wrong, not perfect.
             return ScoreResult(score=0.0, method="execution_match", details="gold result is empty")
-        overlap = len(pred_rows & gold_rows) / len(gold_rows)
+        inter = len(pred_rows & gold_rows)
+        # Symmetric (Jaccard-style) overlap so a *superset* of gold cannot score
+        # 1.0 — recall-only would reward-hack by returning extra rows.
+        denom = max(len(pred_rows), len(gold_rows))
+        overlap = inter / denom
         return ScoreResult(score=round(overlap, 4), method="execution_match",
-                           details=f"partial overlap {len(pred_rows & gold_rows)}/{len(gold_rows)}")
+                           details=f"partial overlap {inter}/{denom} "
+                                   f"(pred={len(pred_rows)} gold={len(gold_rows)})")
 
     # Generic equality
     match = str(pred_out).strip() == str(gold_out).strip()
@@ -184,18 +190,58 @@ class ScoreResult:
 # ---------------------------------------------------------------------------
 
 
+_NUMBER_RE = re.compile(r"-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?")
+
+
+def _as_number(text: str) -> float | None:
+    """Parse *text* as a single number (commas allowed), else None."""
+    s = text.strip().replace(",", "")
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
 def score_exact_match(output: str, expected: str) -> float:
-    """Return 1.0 if *expected* appears (case-insensitively) inside *output*.
+    """Return 1.0 if *expected* matches *output* (case-insensitive).
+
+    For numeric expected values the *final* number in the output is extracted
+    and compared numerically — plain substring containment would let "142"
+    satisfy an expected "42" (GSM8K-style inflation). For non-numeric expected
+    values the match is anchored on word boundaries so "42" does not match
+    inside "142".
 
     Args:
         output:   The agent's actual output text.
-        expected: The expected substring to search for.
+        expected: The expected answer / substring to search for.
 
     Returns:
         1.0 if expected is found, 0.0 otherwise.
     """
     if not expected:
         return 1.0
+
+    expected_num = _as_number(expected)
+    if expected_num is not None:
+        # Compare against the LAST number emitted (the conventional final answer).
+        matches = _NUMBER_RE.findall(output)
+        if not matches:
+            return 0.0
+        final = _as_number(matches[-1])
+        if final is None:
+            return 0.0
+        return 1.0 if final == expected_num else 0.0
+
+    # Non-numeric: anchor on word boundaries to avoid spurious substring hits
+    # (e.g. expected "class" matching inside "classification").
+    stripped = expected.strip()
+    edges_are_word_chars = bool(stripped) and (
+        stripped[0].isalnum() or stripped[0] == "_"
+    ) and (stripped[-1].isalnum() or stripped[-1] == "_")
+    if edges_are_word_chars:
+        pattern = re.compile(r"\b" + re.escape(stripped) + r"\b", re.IGNORECASE)
+        return 1.0 if pattern.search(output) else 0.0
+    # Edges are punctuation/symbols where \b can never anchor — plain containment.
     return 1.0 if expected.lower() in output.lower() else 0.0
 
 
@@ -402,7 +448,12 @@ async def score_llm_judge(
 
     Raises:
         Exception: Propagated from LLM provider on connectivity failure.
-                   On parse failure, returns score=0.5 (uncertain).
+
+    Note:
+        On judge unavailability (unparseable response or provider exception) the
+        score is 0.0, NOT 0.5. The runner's pass threshold is 0.5 with ``>=``, so
+        returning 0.5 on an outage would silently mark every case as passed. A
+        failed judge must score below the pass threshold and flag itself.
     """
     effective_rubric = rubric or _DEFAULT_RUBRIC
     prompt = _JUDGE_PROMPT_TEMPLATE.format(
@@ -464,14 +515,20 @@ async def score_llm_judge(
                 )
         except Exception:
             pass
-        return ScoreResult(score=0.5, method="llm_judge", details="Parse error; defaulting to 0.5")
+        # Judge produced no usable signal — treat as unavailable, NOT uncertain.
+        # Scoring 0.5 here would pass the >=0.5 runner threshold on an outage.
+        return ScoreResult(
+            score=0.0,
+            method="llm_judge",
+            details="judge unavailable: unparseable response (below pass threshold)",
+        )
 
     except Exception as exc:
         logger.warning("LLM judge call failed: %s", exc)
         return ScoreResult(
-            score=0.5,
+            score=0.0,
             method="llm_judge",
-            details=f"LLM judge error: {exc}",
+            details=f"judge unavailable: {exc} (below pass threshold)",
         )
 
 

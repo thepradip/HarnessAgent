@@ -279,6 +279,65 @@ class OnlineLearningMonitor:
     # Regression detection + rollback
     # ------------------------------------------------------------------
 
+    async def _detect_rate_regression(
+        self, check: PendingRollbackCheck
+    ) -> tuple[bool | None, str]:
+        """Compare windowed error *rates* of new vs baseline prompt version.
+
+        Returns ``(regressed, detail)``. ``regressed`` is ``None`` when the
+        windowed metrics are not usable (no version ids, or the new version has
+        no samples yet) so the caller can fall back to the count heuristic.
+
+        Error rate = 1 - success_rate over the recent sliding window. The new
+        version regresses when its error rate exceeds the baseline's by more
+        than ``regression_threshold`` (relative).
+        """
+        if not check.new_version_id:
+            return None, ""
+        try:
+            new_vm = await self.get_windowed_metrics(
+                check.agent_type, check.new_version_id
+            )
+        except Exception as exc:
+            logger.warning("rollback check: windowed metrics failed: %s", exc)
+            return None, ""
+
+        # Need at least a few post-patch runs to judge.
+        if new_vm.sample_count < 3:
+            return None, ""
+
+        new_err = 1.0 - new_vm.success_rate
+
+        baseline_err: float | None = None
+        if check.baseline_version_id:
+            try:
+                base_vm = await self.get_windowed_metrics(
+                    check.agent_type, check.baseline_version_id
+                )
+                if base_vm.sample_count > 0:
+                    baseline_err = 1.0 - base_vm.success_rate
+            except Exception as exc:
+                logger.debug("rollback check: baseline metrics failed: %s", exc)
+
+        if baseline_err is None:
+            # No comparable baseline window — treat a high absolute post-patch
+            # error rate as a regression.
+            regressed = new_err >= 0.5
+            return regressed, (
+                f"rate-based (new_err={new_err:.2f} over n={new_vm.sample_count}, "
+                f"no baseline window)"
+            )
+
+        if baseline_err <= 0:
+            # Baseline was perfect; any non-trivial error rate is a regression.
+            regressed = new_err > self.regression_threshold
+        else:
+            regressed = new_err > baseline_err * (1 + self.regression_threshold)
+        return regressed, (
+            f"rate-based (baseline_err={baseline_err:.2f} new_err={new_err:.2f} "
+            f"over n={new_vm.sample_count})"
+        )
+
     async def check_and_maybe_rollback(
         self,
         agent_type: str,
@@ -303,40 +362,50 @@ class OnlineLearningMonitor:
         if check is None:
             return False
 
-        try:
-            current_error_count = await error_collector.count(agent_type)
-        except Exception as exc:
-            logger.warning("rollback check: error count failed: %s", exc)
-            return False
+        # Preferred path: compare *windowed error rates* (errors per run) between
+        # the post-patch version and the pre-patch baseline version. Cumulative
+        # all-time error counts (error_collector.count -> zcard) only ever grow,
+        # so a count-based comparison flags a regression on any healthy system
+        # that simply keeps running.
+        regressed, detail = await self._detect_rate_regression(check)
 
-        baseline = check.baseline_error_count
-        # Detect regression: error count grew by more than threshold
-        regressed = (
-            baseline > 0
-            and current_error_count > baseline * (1 + self.regression_threshold)
-        ) or (
-            baseline == 0
-            and current_error_count >= 3
-        )
+        if regressed is None:
+            # Windowed metrics unavailable (e.g. no per-version samples yet) —
+            # fall back to the count-based heuristic.
+            try:
+                current_error_count = await error_collector.count(agent_type)
+            except Exception as exc:
+                logger.warning("rollback check: error count failed: %s", exc)
+                return False
+
+            baseline = check.baseline_error_count
+            regressed = (
+                baseline > 0
+                and current_error_count > baseline * (1 + self.regression_threshold)
+            ) or (
+                baseline == 0
+                and current_error_count >= 3
+            )
+            detail = (
+                f"count-based (baseline={baseline} current={current_error_count})"
+            )
 
         if not regressed:
             logger.info(
                 "Post-apply check for agent_type=%s: no regression "
-                "(baseline=%d current=%d) — patch %s retained",
+                "[%s] — patch %s retained",
                 agent_type,
-                baseline,
-                current_error_count,
+                detail,
                 check.patch_id[:8],
             )
             return False
 
         # Regression detected — roll back
         logger.warning(
-            "Regression detected for agent_type=%s: error count %d → %d "
+            "Regression detected for agent_type=%s [%s] "
             "(threshold=%.0f%%) — rolling back patch %s",
             agent_type,
-            baseline,
-            current_error_count,
+            detail,
             self.regression_threshold * 100,
             check.patch_id[:8],
         )

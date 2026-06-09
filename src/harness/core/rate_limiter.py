@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 import redis.asyncio as aioredis
 from fastapi import Request, Response
@@ -69,11 +70,18 @@ class RateLimiter:
         limit: int | None = None,
     ) -> RateLimitResult:
         """Check the rate limit and record the request if allowed."""
-        effective_limit = limit or self.default_rpm
+        # An explicit limit of 0 means "deny everything"; only fall back to the
+        # default when no limit was supplied at all.
+        effective_limit = self.default_rpm if limit is None else limit
         now = time.time()
         window_start = now - self.window_seconds
         key = self._key(tenant_id, resource)
         reset_at = datetime.fromtimestamp(now + self.window_seconds, tz=timezone.utc)
+
+        # Build the member string ONCE so the rollback can target this exact
+        # entry. uuid4 guarantees uniqueness even for concurrent calls in the
+        # same process (id(object()) of a freed temp object can collide).
+        member = f"{now}:{uuid4().hex}:{cost}"
 
         pipe = self._redis.pipeline(transaction=True)
         # Remove expired entries
@@ -81,7 +89,7 @@ class RateLimiter:
         # Fetch current window entries with their scores
         pipe.zrange(key, 0, -1, withscores=True)
         # Add the new request — encode cost in the member so we can sum it later
-        pipe.zadd(key, {f"{now}:{id(object())}:{cost}": now})
+        pipe.zadd(key, {member: now})
         # Set TTL on the key
         pipe.expire(key, self.window_seconds * 2)
         results: list[Any] = await pipe.execute()
@@ -92,8 +100,9 @@ class RateLimiter:
 
         # Block if adding this request's cost would exceed the limit
         if current_cost + cost > effective_limit:
-            # Undo the zadd we just did
-            await self._redis.zremrangebyscore(key, now, now + 0.001)
+            # Undo exactly the entry we added — never a score range, which can
+            # erase a concurrent request that landed at the same timestamp.
+            await self._redis.zrem(key, member)
             oldest_score = window_entries[0][1] if window_entries else now
             retry_after = max(0.0, (oldest_score + self.window_seconds) - now)
             return RateLimitResult(

@@ -218,6 +218,16 @@ class ChromaVectorStore:
                 failure_class=FailureClass.MEMORY_VECTOR,
             ) from exc
 
+    async def close(self) -> None:
+        """Release the ChromaDB client.
+
+        Ephemeral/persistent Chroma clients hold no network sockets, but we
+        drop references so a fresh client is created on next use and so callers
+        can treat all backends uniformly.
+        """
+        self._collection = None
+        self._client = None
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------

@@ -17,7 +17,10 @@ _NONDETERMINISTIC_SQL = re.compile(
     re.IGNORECASE,
 )
 _NONDETERMINISTIC_CODE = re.compile(
-    r"\b(random\.|uuid\.|datetime\.now|time\.time\(\)|os\.urandom|secrets\.)\b",
+    # No trailing \b: every alternative ends in a non-word char (".", ")") so a
+    # trailing word-boundary could never match (e.g. "time.time()" at end of
+    # expression). Leading \b still anchors the identifier start.
+    r"\b(random\.|uuid\.|datetime\.now|time\.time\(\)|os\.urandom|secrets\.)",
     re.IGNORECASE,
 )
 
