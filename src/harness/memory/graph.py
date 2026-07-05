@@ -324,14 +324,38 @@ class Neo4jGraphMemory:
     async def _run_query(
         self, cypher: str, params: dict[str, Any] | None = None
     ) -> list[Any]:
-        """Execute a Cypher query with retry on ServiceUnavailable."""
+        """Execute a Cypher query and return rows as dicts (``result.data()``).
+
+        Note: ``data()`` serialises graph entities (nodes, relationships,
+        paths) into plain dicts/lists — labels and Path structure are lost.
+        Use :meth:`_run_query_values` when the caller needs real graph objects.
+        """
+        return await self._run(cypher, params, values=False)
+
+    async def _run_query_values(
+        self, cypher: str, params: dict[str, Any] | None = None
+    ) -> list[list[Any]]:
+        """Execute a Cypher query and return raw value rows (``result.values()``).
+
+        Preserves neo4j graph objects (Node, Relationship, Path) so callers
+        like :meth:`traverse` can walk real paths — ``result.data()`` would
+        flatten them into dicts and drop labels/structure.
+        """
+        return await self._run(cypher, params, values=True)
+
+    async def _run(
+        self, cypher: str, params: dict[str, Any] | None, values: bool
+    ) -> list[Any]:
+        """Shared retry loop for Cypher execution."""
         driver = await self._get_driver()
         last_exc: Exception | None = None
         for attempt in range(self._MAX_RETRIES):
             try:
                 async with driver.session() as session:
                     result = await session.run(cypher, parameters=params or {})
-                    return await result.data()
+                    if values:
+                        return list(await result.values())
+                    return list(await result.data())
             except Exception as exc:
                 if "ServiceUnavailable" in type(exc).__name__ and attempt < self._MAX_RETRIES - 1:
                     wait = 0.5 * (attempt + 1)
@@ -400,11 +424,13 @@ class Neo4jGraphMemory:
             "RETURN path "
             "LIMIT 200"
         )
-        rows = await self._run_query(cypher, {"ids": start_ids})
+        # values() keeps real neo4j Path objects; data() would flatten them
+        # into dicts and _convert_neo4j_path would silently drop every path.
+        rows = await self._run_query_values(cypher, {"ids": start_ids})
 
         paths: list[GraphPath] = []
         for row in rows:
-            path_data = row.get("path")
+            path_data = row[0] if row else None
             if path_data is None:
                 continue
             try:
@@ -421,24 +447,26 @@ class Neo4jGraphMemory:
         names: list[str],
         fuzzy: bool = True,
     ) -> list[GraphNode]:
+        # Return labels explicitly — result.data() serialises nodes to plain
+        # property dicts, so labels would otherwise be lost ("unknown").
         if fuzzy and names:
             q = names[0]
             cypher = (
                 "MATCH (n) WHERE n.id IN $ids "
                 "OR toLower(n.name) CONTAINS toLower($q) "
-                "RETURN n LIMIT 50"
+                "RETURN n, labels(n) AS labels LIMIT 50"
             )
             rows = await self._run_query(cypher, {"ids": names, "q": q})
         else:
-            cypher = "MATCH (n) WHERE n.id IN $ids RETURN n"
+            cypher = "MATCH (n) WHERE n.id IN $ids RETURN n, labels(n) AS labels"
             rows = await self._run_query(cypher, {"ids": names})
 
         nodes: list[GraphNode] = []
         for row in rows:
-            node_data = row.get("n", {})
-            props = dict(node_data)
+            props = dict(row.get("n", {}))
             node_id = props.pop("id", "")
-            node_type = list(node_data.labels)[0] if hasattr(node_data, "labels") else "unknown"
+            labels = row.get("labels") or []
+            node_type = labels[0] if labels else "unknown"
             nodes.append(GraphNode(id=node_id, type=node_type, props=props))
         return nodes
 
