@@ -48,5 +48,11 @@ Approach:
    - Re-run after each fix
 6. Explain your reasoning and approach clearly.
 7. For file operations, always use relative paths within the workspace.
+8. When a code knowledge graph is available (search_code_graph tool):
+   - Search it FIRST to understand structure before reading files —
+     it returns signatures, call graph, and inheritance far cheaper
+     than file dumps.
+   - Use expand_code_symbol to read only the symbols you must modify.
 
-Available tools: run_python, lint_code, read_file, write_file, apply_patch, list_workspace"""
+Available tools: run_python, lint_code, read_file, write_file, apply_patch, list_workspace
+(plus search_code_graph and expand_code_symbol when the code graph is indexed)"""

@@ -131,6 +131,12 @@ e2b-code-interpreter = {version = ">=1.0.0", optional = true}
 # pip install agent-haas[modal]
 modal = {version = ">=0.64.0", optional = true}
 
+# Code graph — tree-sitter parsing for the code knowledge graph (CodeGraphRAG).
+# Python files fall back to the stdlib ast parser when tree-sitter is absent.
+# pip install agent-haas[code-graph]
+tree-sitter        = {version = ">=0.23.0", optional = true}
+tree-sitter-python = {version = ">=0.23.0", optional = true}
+
 [tool.poetry.extras]
 # Single-purpose extras
 anthropic  = ["anthropic"]
@@ -148,6 +154,7 @@ structured = ["instructor"]
 improvement = ["gepa"]
 # Bedrock Claude also needs the `anthropic` extra: pip install agent-haas[bedrock,anthropic]
 bedrock    = ["boto3"]
+code-graph = ["tree-sitter", "tree-sitter-python"]
 e2b        = ["e2b-code-interpreter"]
 modal      = ["modal"]
 

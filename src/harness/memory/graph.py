@@ -186,6 +186,24 @@ class NetworkXGraphMemory:
 
             return found
 
+    async def remove_nodes_by_prop(self, key: str, value: Any) -> int:
+        """Remove every node whose property *key* equals *value*.
+
+        Incident edges are removed with the nodes (networkx semantics).
+        Used by the code-graph indexer to drop a file's stale subgraph before
+        re-indexing. Returns the number of nodes removed.
+        """
+        async with self._lock:
+            doomed = [
+                node_id
+                for node_id, attrs in self._G.nodes(data=True)
+                if attrs.get(key) == value
+            ]
+            self._G.remove_nodes_from(doomed)
+            if doomed:
+                await self._persist()
+            return len(doomed)
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
@@ -423,6 +441,20 @@ class Neo4jGraphMemory:
             node_type = list(node_data.labels)[0] if hasattr(node_data, "labels") else "unknown"
             nodes.append(GraphNode(id=node_id, type=node_type, props=props))
         return nodes
+
+    async def remove_nodes_by_prop(self, key: str, value: Any) -> int:
+        """Remove every node whose property *key* equals *value* (DETACH DELETE).
+
+        Property access is dynamic (``n[$key]``) so both key and value stay
+        parameterised — no Cypher injection surface. Returns nodes removed.
+        """
+        cypher = (
+            "MATCH (n) WHERE n[$key] = $value "
+            "DETACH DELETE n "
+            "RETURN count(n) AS removed"
+        )
+        rows = await self._run_query(cypher, {"key": key, "value": value})
+        return int(rows[0].get("removed", 0)) if rows else 0
 
     async def close(self) -> None:
         if self._driver is not None:

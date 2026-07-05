@@ -4,6 +4,11 @@ Exports the complete tool ecosystem: registry, MCP adapter, skill system,
 SQL tools, code tools, and file tools.
 """
 
+from harness.tools.code_graph_tools import (
+    ExpandCodeSymbolTool,
+    SearchCodeGraphTool,
+    build_code_graph_tools,
+)
 from harness.tools.code_tools import ApplyPatchTool, LintCodeTool, RunCodeTool
 from harness.tools.file_tools import ListWorkspaceTool, ReadFileTool, WriteFileTool
 from harness.tools.mcp_client import MCPToolAdapter
@@ -42,6 +47,9 @@ __all__ = [
     "LintCodeTool",
     "ApplyPatchTool",
     "ListWorkspaceTool",
+    "SearchCodeGraphTool",
+    "ExpandCodeSymbolTool",
+    "build_code_graph_tools",
     "SkillStore",
     "SkillArtifact",
     "SkillCapture",

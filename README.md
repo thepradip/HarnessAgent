@@ -137,6 +137,35 @@ HarnessAgent handles all of that.
 
 ## What's new
 
+### Code knowledge graph (CodeGraphRAG)
+
+Index a repository's structure — classes, functions, methods, imports, calls,
+inheritance — into graph memory and retrieve it signatures-first, so code
+agents see compact structure (~10–20× fewer tokens than file dumps) and expand
+full source only for the symbols they actually need. Python parses with the
+stdlib `ast` (zero extra deps); `pip install agent-haas[code-graph]` adds the
+tree-sitter tier. Incremental re-index via per-file content hashes on both
+NetworkX and Neo4j backends.
+
+```python
+from harness.memory import CodeGraphIndexer, CodeGraphRAG
+from harness.memory.graph import NetworkXGraphMemory
+
+graph = NetworkXGraphMemory()
+await CodeGraphIndexer(graph).index_repo("/path/to/repo")
+
+rag = CodeGraphRAG(graph, repo_root="/path/to/repo")
+result = await rag.retrieve("who calls LLMRouter.complete?")
+print(result.graph_context)     # [SYMBOLS] signatures + [CALL GRAPH] + [INHERITANCE]
+
+source = await rag.expand_symbol("code:sym:app/llm.py::LLMRouter.complete")
+```
+
+Agents get it as two tools — `search_code_graph` and `expand_code_symbol`
+(`from harness.tools import build_code_graph_tools`). Full guide:
+[docs/code_graph.md](docs/code_graph.md) · runnable demo:
+`python examples/code_graph_demo.py`
+
 ### Tool result size cap
 
 Large tool outputs (full-table SQL dumps, verbose file reads) are automatically capped at **8,000 chars** before they enter agent history, preventing a single noisy tool call from consuming the entire context window.

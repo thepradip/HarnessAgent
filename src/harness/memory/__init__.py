@@ -1,5 +1,7 @@
 """Harness memory module — all memory tiers and retrieval strategies."""
 
+from harness.memory.code_graph import CodeGraphIndexer, CodeIndexStats, build_symbol_chunks
+from harness.memory.code_graph_rag import CodeGraphRAG
 from harness.memory.context_manager import ContextWindowManager
 from harness.memory.graph import NetworkXGraphMemory, Neo4jGraphMemory, get_graph_memory
 from harness.memory.graph_rag import GraphRAGEngine
@@ -12,6 +14,10 @@ __all__ = [
     "ShortTermMemory",
     "GraphMemory",
     "GraphRAGEngine",
+    "CodeGraphIndexer",
+    "CodeGraphRAG",
+    "CodeIndexStats",
+    "build_symbol_chunks",
     "ContextWindowManager",
     "VectorStoreFactory",
     "build_embedding_provider",
